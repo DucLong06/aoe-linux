@@ -9,6 +9,9 @@
 #   aoe-linux folder          open the game folder (saves, scenarios, mods)
 #   aoe-linux doctor          check this machine and the install
 #   aoe-linux proxy [URL|off] save a proxy for downloads (menu launches use it too)
+#   aoe-linux lan             how to play on the LAN + this machine's address
+#   aoe-linux name ["Name"]   show / set the multiplayer player name
+#   aoe-linux repair          redo DirectPlay, registry and menu entries
 #   aoe-linux uninstall       remove the game environment (asks first)
 #
 # Everything lives in ~/.local/share/aoe-linux (no sudo, no flatpak, no Bottles):
@@ -16,7 +19,7 @@
 # cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
 set -euo pipefail
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 
 # Pinned downloads: name, url, sha256. Bump together, never one without the other.
 WINE_VER="11.22"
@@ -226,18 +229,43 @@ pick_source_gui() {
     esac
 }
 
+# direct_url LINK: turn a Google Drive / Dropbox / OneDrive share link into a
+# direct download. Drive's confirm=t skips the "can't scan for viruses" page.
+direct_url() {
+    local u=$1 id=""
+    case "$u" in
+        *drive.google.com/file/d/*) id=${u#*/file/d/}; id=${id%%[/?]*} ;;
+        *drive.google.com/*id=*|*drive.usercontent.google.com/*id=*) id=${u#*id=}; id=${id%%&*} ;;
+    esac
+    if [ -n "$id" ]; then echo "https://drive.usercontent.google.com/download?id=$id&export=download&confirm=t"; return; fi
+    case "$u" in
+        *dropbox.com/*dl=0*) echo "${u/dl=0/dl=1}" ;;
+        *dropbox.com/*\?*)   echo "$u&dl=1" ;;
+        *dropbox.com/*)      echo "$u?dl=1" ;;
+        *1drv.ms/*|*onedrive.live.com/*) case "$u" in *\?*) echo "$u&download=1" ;; *) echo "$u?download=1" ;; esac ;;
+        *) echo "$u" ;;
+    esac
+}
+
 import_game() {
     local src=$1 tmp root kind dest
     tmp="$DATA/import.tmp"; rm -rf "$tmp"; mkdir -p "$tmp"
     case "$src" in
         http://*|https://*)
             step "Downloading the game" "Đang tải game"
-            local f
+            local f url
+            url=$(direct_url "$src")
             f="$CACHE/game-$(echo "$src" | sha256sum | cut -c1-12).zip"
             mkdir -p "$CACHE"
             local i ok=0
             for i in 1 2 3 4 5 6; do
-                curl -fL --connect-timeout 20 --retry 3 -C - -o "$f" "$src" && { ok=1; break; }
+                curl -fL --connect-timeout 20 --retry 3 -C - -o "$f" "$url" || true
+                # a share page or quota notice comes back as HTML, not as a zip
+                if [ "$(head -c 2 "$f" 2>/dev/null)" = "PK" ] && unzip -tqq "$f" >/dev/null 2>&1; then ok=1; break; fi
+                if grep -qi '<html' "$f" 2>/dev/null; then rm -f "$f"
+                    die "The link gives a web page, not the file. Share it as \"Anyone with the link\" and paste it again." \
+                        "Link trả về trang web chứ không phải file. Chia sẻ ở chế độ \"Bất kỳ ai có đường liên kết\" rồi dán lại."
+                fi
                 say "Retry %s/6" "Thử lại %s/6" "$i"; sleep 5
             done
             [ $ok = 1 ] || die "Could not download the game" "Không tải được game"
@@ -271,6 +299,7 @@ import_game() {
     mkdir -p "$GAMES"; mv "$tmp" "$dest"; rm -rf "$dest.old"
     install_ddraw "$dest"
     write_registry "$kind"
+    if [ "$kind" = aoe1 ]; then install_dplay; fi
     IMPORTED=$kind
 }
 
@@ -315,6 +344,11 @@ write_registry() {
             printf '[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Microsoft Games\\Age of Empires Expansion\\1.0]\r\n'
             printf '"EXE Path"="%s"\r\n"InstalledGroup"="3"\r\n"LangID"=dword:00000009\r\n"Launched"="1"\r\n' "$dir"
             printf '"PID"="00000-000-0000000-00000"\r\n"Version"="1.0"\r\n"VersionType"="RetailVersion"\r\n\r\n'
+            # Multiplayer: pre-pick TCP/IP (DirectPlay's name for it says "Internet",
+            # but it is what LAN games use) and the player's name
+            printf '[HKEY_CURRENT_USER\\Software\\Microsoft\\Games\\Age of Empires\\1.00]\r\n'
+            printf '"Default Age Of Empires Multiplayer Service"="Internet TCP/IP Connection For DirectPlay"\r\n'
+            printf '"Default Age Of Empires Player Name"="%s"\r\n\r\n' "$(player_name)"
         } >"$reg"
     else
         dir='C:\\Games\\aoe2'
@@ -338,6 +372,102 @@ write_registry() {
 
 wine_stop() { "$RUNTIME/bin/wineserver" -k 2>/dev/null || true; "$RUNTIME/bin/wineserver" -w 2>/dev/null || true; }
 
+# LAN needs Microsoft's DirectPlay: Wine's own one cannot host an AoE game
+# ("Unable to create game"). Take it from the game's own Dplay60a.exe (most AoE
+# copies ship it), else from an old Bottles/winetricks install on this machine.
+DPLAY_FILES="dplayx.dll dpwsockx.dll dpmodemx.dll dplaysvr.exe"
+
+have_dplay() { [ -f "$WINEPREFIX/drive_c/windows/syswow64/dpwsockx.dll" ] && ! grep -q 'Wine builtin DLL' "$WINEPREFIX/drive_c/windows/syswow64/dpwsockx.dll"; }
+
+install_dplay() {
+    have_dplay && return 0
+    step "Adding DirectPlay for LAN games" "Đang thêm DirectPlay để chơi LAN"
+    local t="$WINEPREFIX/drive_c/dplay-tmp" src f b d
+    rm -rf "$t"; mkdir -p "$t"
+    src=$(has "$GAMES/aoe1" dplay60a.exe dplay61a.exe 2>/dev/null || true)
+    if [ -n "$src" ]; then
+        (cd "$GAMES/aoe1" && w "$src" /Q '/T:C:\dplay-tmp' /C >/dev/null 2>&1) || true
+        wine_stop
+    fi
+    if [ -z "$(has "$t" dpwsockx.dll)" ]; then
+        for d in "$HOME"/.var/app/com.usebottles.bottles/data/bottles/bottles/*/drive_c/windows/syswow64 \
+                 "$HOME"/.wine/drive_c/windows/syswow64 "$HOME"/.wine/drive_c/windows/system32; do
+            [ -f "$d/dpwsockx.dll" ] && ! grep -q 'Wine builtin DLL' "$d/dpwsockx.dll" || continue
+            for f in $DPLAY_FILES; do [ -f "$d/$f" ] && cp "$d/$f" "$t/"; done
+            break
+        done
+    fi
+    for f in $DPLAY_FILES; do
+        b=$(has "$t" "$f") || { rm -rf "$t"
+            say "No DirectPlay found (Dplay60a.exe is missing from the game folder): single player works, LAN may not." \
+                "Không tìm thấy DirectPlay (thư mục game thiếu Dplay60a.exe): chơi đơn được, chơi LAN có thể không được."
+            return 0; }
+        cp "$t/$b" "$WINEPREFIX/drive_c/windows/syswow64/$f"
+    done
+    rm -rf "$t"
+    local reg="$DATA/dplay.reg"
+    {
+        printf 'Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]\r\n'
+        for f in $DPLAY_FILES; do printf '"%s"="native,builtin"\r\n' "${f%.dll}"; done
+        printf '\r\n'
+    } >"$reg"
+    w regedit /S "$(winpath "$reg")" >/dev/null 2>&1 || true
+    wine_stop
+}
+
+# Player name for multiplayer: saved setting, else the one from an old Bottles
+# install, else the login name. Quotes/backslashes would break the .reg file.
+player_name() {
+    local n; n=$(cfg_get name)
+    if [ -z "$n" ]; then
+        local r
+        for r in "$HOME"/.var/app/com.usebottles.bottles/data/bottles/bottles/*/user.reg; do
+            [ -f "$r" ] || continue
+            n=$(sed -n 's/^"Default Age Of Empires Player Name"="\(.*\)"\r\{0,1\}$/\1/p' "$r" | head -1)
+            [ -n "$n" ] && break
+        done
+    fi
+    [ -n "$n" ] || n=${USER:-Player}
+    n=${n//[\"\\]/}
+    echo "${n:0:20}"
+}
+
+set_name() {
+    local n=${1:-}
+    [ -n "$n" ] || { say "Player name: %s" "Tên người chơi: %s" "$(player_name)"; return; }
+    cfg_set name "${n//|/}"
+    if [ -d "$GAMES/aoe1" ]; then write_registry aoe1; fi
+    say "Player name set: %s" "Đã đặt tên người chơi: %s" "$(player_name)"
+}
+
+# LAN help: this machine's addresses and the 4 clicks to host or join
+lan_info() {
+    # the address on the default route is the one other players can reach;
+    # docker/libvirt bridges would only confuse
+    local ips; ips=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src") print $(i+1)}' | head -1)
+    [ -n "$ips" ] || ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|virbr|veth|cni|flannel|lxc|vmnet|tailscale|zt)/ {split($4,a,"/"); print a[1]}' | tr '\n' ' ')
+    [ -n "$ips" ] || ips=$(hostname -I 2>/dev/null || true)
+    local txt
+    txt=$(say "LAN play (Rise of Rome)
+
+This machine: %s
+
+Host: Multiplayer -> OK -> Create -> pick map -> Start when everyone shows up.
+Join: Multiplayer -> OK -> Join -> leave the address empty (search the LAN) or type the host's address above -> pick the game.
+
+Everyone must be on the same network. Player name: %s (change: aoe-linux name \"New name\")" \
+"Chơi LAN (Rise of Rome)
+
+Địa chỉ máy này: %s
+
+Tạo phòng: Multiplayer -> OK -> Create -> chọn bản đồ -> Start khi đủ người.
+Vào phòng: Multiplayer -> OK -> Join -> để trống ô địa chỉ (tự tìm trong mạng LAN) hoặc gõ địa chỉ máy chủ phòng -> chọn phòng.
+
+Mọi người phải cùng một mạng. Tên người chơi: %s (đổi: aoe-linux name \"Tên mới\")" "$ips" "$(player_name)")
+    if [ "$GUI" = 1 ]; then zenity --info --title="Age of Empires" --width=520 --no-markup --text="$txt" 2>/dev/null || true
+    else echo "$txt"; fi
+}
+
 # ---------------------------------------------------------------- launchers
 installed_kinds() { local k; for k in aoe1 aoe2; do [ -d "$GAMES/$k" ] && echo $k; done; true; }
 
@@ -355,7 +485,7 @@ exe_for() {
 }
 
 default_game() {
-    local g; for g in "$(cfg_get game)" aoe1x aoe1 aoe2x aoe2; do
+    local g; for g in "$(cfg_get game)" aoe1x aoe2x aoe2 aoe1; do
         [ -n "$g" ] && [ -n "$(exe_for "$g")" ] && { echo "$g"; return; }
     done
 }
@@ -366,7 +496,9 @@ play() {
     [ -n "$game" ] || game=$(default_game)
     [ -n "$game" ] || die "No game installed. Run: aoe-linux setup" "Chưa có game. Chạy: aoe-linux setup"
     exe=$(exe_for "$game"); [ -n "$exe" ] || die "%s is not installed" "Chưa cài %s" "$game"
-    case $game in aoe1*) dir="$GAMES/aoe1" ;; *) dir="$GAMES/aoe2" ;; esac
+    case $game in aoe1*) dir="$GAMES/aoe1"; install_dplay
+                         grep -q 'Default Age Of Empires Multiplayer Service' "$WINEPREFIX/user.reg" 2>/dev/null || write_registry aoe1 ;;
+                  *) dir="$GAMES/aoe2" ;; esac
     local ini; ini="$(dirname "$dir/$exe")/ddraw.ini"
     if [ -f "$ini" ]; then
         if [ "$mode" = windowed ]; then ini_set "$ini" fullscreen false; else ini_set "$ini" fullscreen true; fi
@@ -434,17 +566,17 @@ self_path() {
     echo "$p"
 }
 
-# One menu entry per installed game. The main entry is shipped by the package /
-# install.sh; here we add the per-game ones so Rise of Rome and AoE II show up.
+# Extra menu entries only for Age of Empires II. The main entry (shipped by the
+# package / install.sh) plays Rise of Rome; the 1997 original gets no entry.
 write_desktop_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications" bin g name
     bin=$(self_path); mkdir -p "$apps"
-    for g in aoe1 aoe2x aoe2; do
+    rm -f "$apps/aoe-linux-aoe1.desktop"
+    for g in aoe2x aoe2; do
         rm -f "$apps/aoe-linux-$g.desktop"
         [ -n "$(exe_for $g)" ] || continue
         [ "$g" = "$(default_game)" ] && continue      # the main entry already plays it
         case $g in
-            aoe1)  name="Age of Empires (bản gốc)"; [ $L = vi ] || name="Age of Empires (original)" ;;
             aoe2x) name="Age of Empires II: The Conquerors" ;;
             aoe2)  name="Age of Empires II" ;;
         esac
@@ -514,12 +646,18 @@ cmd=${1:-play}; [ $# -gt 0 ] && shift
 apply_proxy
 case "$cmd" in
     proxy)         proxy_cmd "${1:-}" ;;
+    lan)           lan_info ;;
+    name)          set_name "${1:-}" ;;
     play|run)      play "${1:-}" ;;
     windowed)      play "${1:-}" windowed ;;
     setup|import)  setup "${1:-}" ;;
     display)       display_settings ;;
     folder)        open_folder ;;
     doctor)        doctor ;;
+    repair)        [ -x "$WINE" ] || die "Not set up yet: aoe-linux setup" "Chưa cài: aoe-linux setup"
+                   if [ -d "$GAMES/aoe1" ]; then rm -f "$WINEPREFIX/drive_c/windows/syswow64/dpwsockx.dll"; install_dplay; write_registry aoe1; fi
+                   if [ -d "$GAMES/aoe2" ]; then write_registry aoe2; fi
+                   write_desktop_entries; say "Repaired" "Đã sửa xong" ;;
     uninstall)     uninstall "${1:-}" ;;
     aoe1|aoe1x|aoe2|aoe2x) play "$cmd" ;;
     -V|--version|version) echo "aoe-linux $VERSION" ;;

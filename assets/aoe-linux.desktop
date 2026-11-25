@@ -12,7 +12,12 @@ Categories=Game;StrategyGame;
 Keywords=aoe;age;empires;de che;deche;rise of rome;strategy;
 StartupNotify=true
 StartupWMClass=empiresx.exe
-Actions=windowed;display;folder;setup;
+Actions=lan;windowed;display;folder;setup;
+
+[Desktop Action lan]
+Name=LAN play: how to + this machine's address
+Name[vi]=Chơi LAN: hướng dẫn và địa chỉ máy này
+Exec=aoe-linux lan
 
 [Desktop Action windowed]
 Name=Play in a window
