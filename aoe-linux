@@ -16,7 +16,7 @@
 # cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 # Pinned downloads: name, url, sha256. Bump together, never one without the other.
 WINE_VER="11.22"
@@ -177,7 +177,7 @@ game_kind() {
 # find_game_root DIR: the folder (DIR or below) holding the game exe
 find_game_root() {
     local exe
-    exe=$(find "$1" -maxdepth 4 -type f \( -iname 'empiresx.exe' -o -iname 'empires.exe' -o -iname 'empires2.exe' -o -iname 'age2_x1.exe' \) 2>/dev/null | head -1)
+    exe=$(find "$1" -maxdepth 4 -type f \( -iname 'empiresx.exe' -o -iname 'empires.exe' -o -iname 'empires2.exe' -o -iname 'age2_x1.exe' \) -print -quit 2>/dev/null)
     [ -n "$exe" ] || return 1
     exe=$(dirname "$exe")
     # AoE2 Conquerors keeps age2_x1.exe in a subfolder of the game root
@@ -469,12 +469,22 @@ doctor() {
     if [ -x "$WINE" ]; then say "Wine:    %s" "Wine:    %s" "$("$WINE" --version 2>/dev/null)"
     else say "Wine:    not downloaded yet" "Wine:    chưa tải"; fi
     if [ -x "$WINE" ]; then
-        local miss; miss=$(ldd "$RUNTIME/lib/wine/x86_64-unix/"*.so 2>/dev/null | grep 'not found' | sort -u | awk '{print $1}' | tr '\n' ' ')
-        if [ -n "$miss" ]; then ok=0; say "Missing libraries: %s" "Thiếu thư viện: %s" "$miss"; fi
+        # libraries Wine loads at run time for the window, fonts, OpenGL, sound and TLS
+        local miss="" lib pkg libs
+        libs=$(ldconfig -p 2>/dev/null || true)
+        for lib in libX11.so.6:libx11-6 libXext.so.6:libxext6 libXrender.so.1:libxrender1 libXrandr.so.2:libxrandr2 \
+                   libXi.so.6:libxi6 libXcursor.so.1:libxcursor1 libfreetype.so.6:libfreetype6 \
+                   libfontconfig.so.1:libfontconfig1 libGL.so.1:libgl1 libpulse.so.0:libpulse0 libgnutls.so.30:libgnutls30t64; do
+            pkg=${lib#*:}; lib=${lib%%:*}
+            case "$libs" in *"$lib "*) ;; *) miss="$miss $pkg" ;; esac
+        done
+        if [ -n "$miss" ]; then ok=0; say "Missing libraries, install with: sudo apt install%s" "Thiếu thư viện, cài bằng: sudo apt install%s" "$miss"; fi
     fi
     local k; for k in $(installed_kinds); do say "Game:    %s -> %s" "Game:    %s -> %s" "$k" "$GAMES/$k"; done
     [ -n "$(installed_kinds)" ] || { ok=0; say "Game:    not imported (aoe-linux setup)" "Game:    chưa nhập (aoe-linux setup)"; }
-    fc-list 2>/dev/null | grep -qi 'Liberation Sans' || { ok=0; say "Fonts:   fonts-liberation missing (sudo apt install fonts-liberation)" "Font:    thiếu fonts-liberation (sudo apt install fonts-liberation)"; }
+    local fonts; fonts=$(fc-list : family 2>/dev/null || true)
+    case "$fonts" in *"Liberation Sans"*) say "Fonts:   Liberation OK" "Font:    Liberation OK" ;;
+        *) ok=0; say "Fonts:   fonts-liberation missing (sudo apt install fonts-liberation)" "Font:    thiếu fonts-liberation (sudo apt install fonts-liberation)" ;; esac
     command -v zenity >/dev/null || say "zenity:  missing, setup works from the terminal only" "zenity:  không có, chỉ cài được từ terminal"
     if command -v glxinfo >/dev/null; then say "GPU:     %s" "GPU:     %s" "$(glxinfo -B 2>/dev/null | sed -n 's/.*renderer string: //p')"; fi
     [ -f "$LOG" ] && { say "Last run log: %s" "Log lần chạy gần nhất: %s" "$LOG"; tail -5 "$LOG" | sed 's/^/  /'; }
