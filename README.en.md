@@ -32,7 +32,7 @@ Then open **Age of Empires** from the app menu. The first click:
 1. Looks for a copy you already have: an install made with Bottles (the old
    guide), or a `.zip` named like `aoe`, `empire`, `de-che` in Downloads.
 2. Otherwise asks where the game is: a **.zip file**, an unpacked **folder**,
-   or a **download link**.
+   or a **download link** (Google Drive, Dropbox and OneDrive share links work as-is).
 3. Downloads Wine (~95 MB, once, resumes when the network drops), builds the
    environment, copies the game in and starts it. About 1–2 minutes.
 
@@ -44,6 +44,26 @@ aoe-linux                             # play
 ```
 
 > This repo ships no game files (the game is copyrighted). Bring your own copy.
+
+## LAN play
+
+Everyone installs aoe-linux and joins the same network. aoe-linux installs
+Microsoft's DirectPlay from the game's own `Dplay60a.exe` (Wine's DirectPlay cannot
+host a game), pre-selects TCP/IP and fills in the player name.
+
+- **Host:** Multiplayer → OK → Create → name the game → OK → pick the map → tick
+  I'm Ready! → Start Game once everyone is in and ready.
+- **Join:** Multiplayer → OK → Show Games → leave the address box **empty** and
+  press OK (searches the LAN) → pick the game → Join → tick I'm Ready!
+- "Internet TCP/IP Connection For DirectPlay" is the right connection type for LAN
+  too. Game not found: type the host's IP (`aoe-linux lan` shows it). Rename:
+  `aoe-linux name "New name"`. With ufw on: allow 47624/tcp and 2300:2400 tcp+udp.
+- Tested: two fresh installs in docker on one network, host + LAN search + join,
+  both reached the game.
+
+To share the game with friends, upload the zip to Google Drive, share it as
+"Anyone with the link" and have them paste the link into the first-run dialog
+(or `aoe-linux setup "<link>"`).
 
 ## Behind a proxy
 
@@ -68,7 +88,7 @@ checked by sha256.
 |---|---|
 | Install Flatpak, Flathub, Bottles, gamescope (over 1 GB) | One small package; portable Wine ~95 MB on first run |
 | Create a bottle, disable DXVK/VKD3D, pick Windows 7 | Done for you |
-| Install allfonts, cnc-ddraw, directplay by hand | cnc-ddraw built in; Arial mapped to Liberation; Wine's own DirectPlay |
+| Install allfonts, cnc-ddraw, directplay by hand | cnc-ddraw built in; Arial mapped to Liberation; DirectPlay from the game's `Dplay60a.exe` |
 | Copy the game into the virtual C: drive, set the working directory | Pick the zip; registry and paths are written for you |
 | Tune gamescope 1024x768 → 1920x1080 + FSR | cnc-ddraw: borderless fullscreen, 4:3 kept, FSR sharpening |
 | Type `NOSTARTUP` to skip the intro | Added for you |
@@ -85,21 +105,25 @@ Right-click the icon in the dock or the app menu:
 - **Open game folder**: saves, maps, campaigns, mods.
 - **Import the game again**: switch to another copy; your saves are kept.
 
-Every game found in the folder gets its own menu entry: Age of Empires
-(original), Rise of Rome, Age of Empires II, The Conquerors.
+The main icon plays Rise of Rome. If the folder also holds Age of Empires II, it
+gets its own menu entry. The right-click menu also has **LAN play: how to + this
+machine's address**.
 
 ## Commands
 
 | Command | Does |
 |---|---|
 | `aoe-linux` | Play (Rise of Rome by default) |
-| `aoe-linux play aoe1 \| aoe1x \| aoe2 \| aoe2x` | Play a specific game |
+| `aoe-linux play aoe2 \| aoe2x` | Play Age of Empires II / The Conquerors |
 | `aoe-linux windowed` | Play in a window |
 | `aoe-linux setup [ZIP\|FOLDER\|URL]` | Import or re-import the game |
 | `aoe-linux display` | Display settings |
 | `aoe-linux folder` | Open the game folder |
 | `aoe-linux doctor` | Check the machine and the install when something breaks |
 | `aoe-linux proxy [URL\|off]` | Save, show or remove the download proxy |
+| `aoe-linux lan` | LAN how-to and this machine's address |
+| `aoe-linux name ["Name"]` | Show or set the player name |
+| `aoe-linux repair` | Redo DirectPlay, registry and menu entries |
 | `aoe-linux uninstall` | Remove the game, saves and Wine (asks first) |
 
 Everything lives in `~/.local/share/aoe-linux`; downloads are cached in
