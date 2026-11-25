@@ -1,0 +1,518 @@
+#!/usr/bin/env bash
+# aoe-linux: play Age of Empires (I, Rise of Rome, II) on Linux in one click.
+#
+#   aoe-linux                 play (first run: asks for the game and sets everything up)
+#   aoe-linux setup [SRC]     set up / re-import the game from a .zip, a folder or a URL
+#   aoe-linux play [GAME]     play: aoe1x (Rise of Rome, default), aoe1, aoe2, aoe2x
+#   aoe-linux windowed        play in a window (Alt+Enter also toggles in game)
+#   aoe-linux display         open the cnc-ddraw display settings window
+#   aoe-linux folder          open the game folder (saves, scenarios, mods)
+#   aoe-linux doctor          check this machine and the install
+#   aoe-linux proxy [URL|off] save a proxy for downloads (menu launches use it too)
+#   aoe-linux uninstall       remove the game environment (asks first)
+#
+# Everything lives in ~/.local/share/aoe-linux (no sudo, no flatpak, no Bottles):
+# a portable Wine build (WoW64, so no 32-bit system libraries are needed),
+# cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# Pinned downloads: name, url, sha256. Bump together, never one without the other.
+WINE_VER="11.22"
+WINE_URL="https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-amd64-wow64.tar.xz"
+WINE_SHA="e2967393d203121195cba94159efe9b575a6fa8fad2815c557036e69285093d8"
+DDRAW_VER="7.1.0.0"
+DDRAW_URL="https://github.com/FunkyFr3sh/cnc-ddraw/releases/download/v${DDRAW_VER}/cnc-ddraw.zip"
+DDRAW_SHA="0b13ab89a64c9918189b1dadd449ef6ed3cb3b7b19cabd96d8adbd95505bb908"
+
+DATA="${AOE_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/aoe-linux}"
+CACHE="${AOE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/aoe-linux}"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/aoe-linux/config"
+RUNTIME="$DATA/wine-$WINE_VER"
+WINE="$RUNTIME/bin/wine"
+export WINEPREFIX="$DATA/prefix"
+GAMES="$WINEPREFIX/drive_c/Games"
+LOG="$DATA/last-run.log"
+
+# ---------------------------------------------------------------- language
+L=en
+for v in "${AOE_LANG:-}" "${LC_ALL:-}" "${LC_MESSAGES:-}" "${LANG:-}"; do
+    case "$v" in "") ;; vi*|VI*) L="vi"; break ;; *) L="en"; break ;; esac
+done
+
+# say "english" "tieng viet" [printf args]
+say() { local f; if [ "$L" = vi ]; then f=$2; else f=$1; fi; shift 2
+        # shellcheck disable=SC2059
+        printf "$f\n" "$@"; }
+step() { say "$@"; [ -n "${PROGRESS_FD:-}" ] && { local f; if [ "$L" = vi ]; then f=$2; else f=$1; fi; shift 2
+        # shellcheck disable=SC2059
+        printf "# $f\n" "$@" >&"$PROGRESS_FD"; } || true; }
+
+GUI=0
+if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v zenity >/dev/null 2>&1 && [ ! -t 0 ]; then GUI=1; fi
+[ "${AOE_NOGUI:-0}" = 1 ] && GUI=0
+
+die() {
+    local msg; if [ "$L" = vi ]; then msg=$2; else msg=$1; fi; shift 2
+    # shellcheck disable=SC2059
+    msg=$(printf "$msg" "$@")
+    echo "aoe-linux: $msg" >&2
+    if [ "$GUI" = 1 ]; then zenity --error --title="Age of Empires" --width=420 --text="$msg" 2>/dev/null || true; fi
+    exit 1
+}
+
+# ---------------------------------------------------------------- config
+cfg_get() { [ -f "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -1; true; }
+cfg_set() {
+    mkdir -p "$(dirname "$CONF")"; touch "$CONF"
+    if grep -q "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=$2|" "$CONF"; else echo "$1=$2" >>"$CONF"; fi
+}
+
+# Networks behind a proxy: `aoe-linux proxy http://host:port` saves it, so the
+# menu entry (which does not see the shell's https_proxy) downloads through it too.
+apply_proxy() {
+    local p; p=$(cfg_get proxy)
+    [ -n "$p" ] && export http_proxy="$p" https_proxy="$p" HTTP_PROXY="$p" HTTPS_PROXY="$p"
+    true
+}
+
+proxy_cmd() {
+    case "${1:-}" in
+        "") local p; p=$(cfg_get proxy)
+            if [ -n "$p" ]; then say "Proxy: %s" "Proxy: %s" "$p"
+            else say "No proxy saved (environment: %s)" "Chưa lưu proxy (biến môi trường: %s)" "${https_proxy:-${HTTPS_PROXY:-none}}"; fi ;;
+        off|none|"-") cfg_set proxy ""; say "Proxy removed" "Đã bỏ proxy" ;;
+        http://*|https://*|socks5://*|socks5h://*) cfg_set proxy "$1"; say "Proxy saved: %s" "Đã lưu proxy: %s" "$1" ;;
+        *) die "Use: aoe-linux proxy http://host:port | off" "Cách dùng: aoe-linux proxy http://máy:cổng | off" ;;
+    esac
+}
+
+# ---------------------------------------------------------------- downloads
+# fetch URL SHA256 DEST: retries and resumes (home networks drop), then verifies.
+fetch() {
+    local url=$1 sha=$2 dest=$3 i
+    mkdir -p "$(dirname "$dest")"
+    good() { echo "$sha  $1" | sha256sum -c --status 2>/dev/null; }
+    good "$dest" && return 0
+    for i in 1 2 3 4 5 6 7 8; do
+        curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 -C - -o "$dest.part" "$url" || true
+        # a complete .part makes curl fail with 416 on resume, so check the file, not curl
+        if good "$dest.part"; then mv "$dest.part" "$dest"; return 0; fi
+        # a .part that is not growing any more is corrupt: start over
+        if [ -f "$dest.part" ] && [ $i -ge 3 ] && [ "$(stat -c %s "$dest.part")" = "${last_size:-x}" ]; then rm -f "$dest.part"; fi
+        last_size=$(stat -c %s "$dest.part" 2>/dev/null || echo 0)
+        say "Network hiccup, retry %s/8 in 5s" "Mạng chập chờn, thử lại %s/8 sau 5 giây" "$i"; sleep 5
+    done
+    die "Could not download %s\nBehind a proxy? aoe-linux proxy http://host:port" \
+        "Không tải được %s\nMạng cần proxy? aoe-linux proxy http://máy:cổng" "$url"
+}
+
+# ---------------------------------------------------------------- runtime
+w() { WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=;ddraw=n,b" "$WINE" "$@"; }
+
+ensure_runtime() {
+    if [ ! -x "$WINE" ]; then
+        step "Downloading Wine %s (~95 MB, once)" "Đang tải Wine %s (~95 MB, chỉ một lần)" "$WINE_VER"
+        fetch "$WINE_URL" "$WINE_SHA" "$CACHE/wine-$WINE_VER.tar.xz"
+        step "Unpacking Wine" "Đang giải nén Wine"
+        mkdir -p "$DATA"; rm -rf "$RUNTIME.tmp"; mkdir "$RUNTIME.tmp"
+        tar -xJf "$CACHE/wine-$WINE_VER.tar.xz" -C "$RUNTIME.tmp" --strip-components=1
+        rm -rf "$RUNTIME"; mv "$RUNTIME.tmp" "$RUNTIME"
+    fi
+    if [ ! -f "$WINEPREFIX/system.reg" ]; then
+        step "Creating the Windows environment (about 30 s)" "Đang tạo môi trường Windows (khoảng 30 giây)"
+        w wineboot -i >/dev/null 2>&1 || true
+        "$RUNTIME/bin/wineserver" -k 2>/dev/null || true
+        [ -f "$WINEPREFIX/system.reg" ] || die "Wine could not create its environment, see: aoe-linux doctor" \
+            "Wine không tạo được môi trường, xem: aoe-linux doctor"
+        prefix_tweaks
+    fi
+}
+
+prefix_tweaks() {
+    local reg="$DATA/tweaks.reg"
+    {
+        printf 'Windows Registry Editor Version 5.00\r\n\r\n'
+        # Windows 7 like the old guide; no crash dialog popping over the game
+        printf '[HKEY_CURRENT_USER\\Software\\Wine]\r\n"Version"="win7"\r\n\r\n'
+        printf '[HKEY_CURRENT_USER\\Software\\Wine\\WineDbg]\r\n"ShowCrashDialog"=dword:00000000\r\n\r\n'
+        # The games ask for Arial/Times/Courier: map them to the metric-compatible Liberation fonts
+        printf '[HKEY_CURRENT_USER\\Software\\Wine\\Fonts\\Replacements]\r\n'
+        printf '"Arial"="Liberation Sans"\r\n"Times New Roman"="Liberation Serif"\r\n"Courier New"="Liberation Mono"\r\n'
+        printf '"MS Sans Serif"="Liberation Sans"\r\n"Comic Sans MS"="Liberation Sans"\r\n\r\n'
+    } >"$reg"
+    w regedit /S "$(winpath "$reg")" >/dev/null 2>&1 || true
+    wine_stop
+    # The fonts themselves: copy them into the prefix so it works even if the host
+    # has them in an unusual place. fonts-liberation ships on every Ubuntu desktop.
+    local f
+    for f in /usr/share/fonts/truetype/liberation/Liberation{Sans,Serif,Mono}-*.ttf; do
+        [ -f "$f" ] && cp -n "$f" "$WINEPREFIX/drive_c/windows/Fonts/" 2>/dev/null || true
+    done
+}
+
+winpath() { echo "Z:${1//\//\\}"; }
+
+# ---------------------------------------------------------------- game import
+# has DIR NAME...: print the first file in DIR named like one of NAMEs (any case)
+has() {
+    local d=$1 n f; shift
+    [ -d "$d" ] || return 1
+    for n in "$@"; do
+        f=$(find "$d" -maxdepth 1 -type f -iname "$n" -printf '%f\n' 2>/dev/null | head -1)
+        [ -n "$f" ] && { echo "$f"; return 0; }
+    done
+    return 1
+}
+
+# Which game is in DIR? prints "aoe1" / "aoe2" / nothing
+game_kind() {
+    local d=$1
+    if has "$d" empires.exe empiresx.exe >/dev/null; then echo aoe1
+    elif has "$d" age2_x1.exe empires2.exe >/dev/null || has "$d/age2_x1" age2_x1.exe >/dev/null; then echo aoe2
+    fi
+}
+
+# find_game_root DIR: the folder (DIR or below) holding the game exe
+find_game_root() {
+    local exe
+    exe=$(find "$1" -maxdepth 4 -type f \( -iname 'empiresx.exe' -o -iname 'empires.exe' -o -iname 'empires2.exe' -o -iname 'age2_x1.exe' \) 2>/dev/null | head -1)
+    [ -n "$exe" ] || return 1
+    exe=$(dirname "$exe")
+    # AoE2 Conquerors keeps age2_x1.exe in a subfolder of the game root
+    case "${exe##*/}" in age2_x1|Age2_x1|AGE2_X1) exe=$(dirname "$exe") ;; esac
+    echo "$exe"
+}
+
+# Guess a game source the user already has: an old Bottles install (the
+# previous guide), or an archive in Downloads/Desktop with a telling name.
+autodetect_source() {
+    local d
+    for d in "$HOME"/.var/app/com.usebottles.bottles/data/bottles/bottles/*/drive_c \
+             "$HOME"/.local/share/bottles/bottles/*/drive_c "$HOME"/.wine/drive_c; do
+        [ -d "$d" ] || continue
+        d=$(find_game_root "$d" 2>/dev/null) && { echo "$d"; return 0; }
+    done
+    for d in "$HOME"/Downloads "$HOME"/Desktop "$HOME"/Tải\ xuống "$HOME"/Màn\ hình\ nền; do
+        [ -d "$d" ] || continue
+        find "$d" -maxdepth 1 -type f -iname '*.zip' \( -iname '*aoe*' -o -iname '*empire*' -o -iname '*de*che*' -o -iname '*deche*' -o -iname '*age*' \) 2>/dev/null | head -1 | grep . && return 0
+    done
+    return 1
+}
+
+pick_source_gui() {
+    local found choice
+    found=$(autodetect_source || true)
+    if [ -n "$found" ]; then
+        if zenity --question --title="Age of Empires" --width=460 \
+            --ok-label="$( [ $L = vi ] && echo 'Dùng bản này' || echo 'Use it')" \
+            --cancel-label="$( [ $L = vi ] && echo 'Chọn khác' || echo 'Pick another')" \
+            --text="$(say "Found a copy of the game:\n\n<b>%s</b>\n\nUse it?" "Tìm thấy game có sẵn trên máy:\n\n<b>%s</b>\n\nDùng bản này?" "${found//&/&amp;}")" 2>/dev/null; then
+            echo "$found"; return 0
+        fi
+    fi
+    choice=$(zenity --list --radiolist --title="Age of Empires" --width=460 --height=260 \
+        --text="$(say 'Where is the game?' 'Game của bạn ở đâu?')" \
+        --column="" --column="$(say 'Source' 'Nguồn')" \
+        TRUE "$(say 'A .zip file' 'File .zip')" \
+        FALSE "$(say 'A folder (already unpacked)' 'Thư mục (đã giải nén)')" \
+        FALSE "$(say 'A download link' 'Link tải')" 2>/dev/null) || return 1
+    case "$choice" in
+        *zip*) zenity --file-selection --title="$(say 'Choose the game .zip' 'Chọn file .zip của game')" \
+                   --file-filter="zip | *.zip *.ZIP" 2>/dev/null ;;
+        *older*|*"Thư mục"*) zenity --file-selection --directory --title="$(say 'Choose the game folder' 'Chọn thư mục game')" 2>/dev/null ;;
+        *) zenity --entry --width=520 --title="Age of Empires" --text="$(say 'Paste the download link (.zip):' 'Dán link tải (.zip):')" 2>/dev/null ;;
+    esac
+}
+
+import_game() {
+    local src=$1 tmp root kind dest
+    tmp="$DATA/import.tmp"; rm -rf "$tmp"; mkdir -p "$tmp"
+    case "$src" in
+        http://*|https://*)
+            step "Downloading the game" "Đang tải game"
+            local f
+            f="$CACHE/game-$(echo "$src" | sha256sum | cut -c1-12).zip"
+            mkdir -p "$CACHE"
+            local i ok=0
+            for i in 1 2 3 4 5 6; do
+                curl -fL --connect-timeout 20 --retry 3 -C - -o "$f" "$src" && { ok=1; break; }
+                say "Retry %s/6" "Thử lại %s/6" "$i"; sleep 5
+            done
+            [ $ok = 1 ] || die "Could not download the game" "Không tải được game"
+            src=$f ;;
+    esac
+    if [ -d "$src" ]; then
+        root=$(find_game_root "$src") || die "No Age of Empires exe found in %s" "Không thấy file chạy Age of Empires trong %s" "$src"
+        step "Copying the game files" "Đang chép file game"
+        cp -a "$root/." "$tmp/"
+    elif [ -f "$src" ]; then
+        step "Unpacking the game" "Đang giải nén game"
+        case "${src,,}" in
+            *.zip) unzip -q -o "$src" -d "$tmp" || die "Cannot unpack %s" "Không giải nén được %s" "$src" ;;
+            *.7z|*.rar) command -v 7z >/dev/null || die "Install 7z to unpack %s (sudo apt install p7zip-full)" "Cần 7z để giải nén %s (sudo apt install p7zip-full)" "$src"
+                        7z x -y -o"$tmp" "$src" >/dev/null ;;
+            *.tar*|*.tgz) tar -xf "$src" -C "$tmp" ;;
+            *) die "Unknown file type: %s" "Không nhận dạng được file: %s" "$src" ;;
+        esac
+        root=$(find_game_root "$tmp") || die "No Age of Empires exe inside %s" "Không thấy file chạy Age of Empires trong %s" "$src"
+        if [ "$root" != "$tmp" ]; then mv "$root" "$tmp.root"; rm -rf "$tmp"; mv "$tmp.root" "$tmp"; fi
+    else
+        die "Not found: %s" "Không tìm thấy: %s" "$src"
+    fi
+    kind=$(game_kind "$tmp"); [ -n "$kind" ] || kind=aoe2
+    dest="$GAMES/$kind"
+    if [ -d "$dest" ]; then
+        # keep the player's saves when re-importing
+        [ -d "$dest/savegame" ] && cp -an "$dest/savegame/." "$tmp/savegame/" 2>/dev/null || true
+        rm -rf "$dest.old"; mv "$dest" "$dest.old"
+    fi
+    mkdir -p "$GAMES"; mv "$tmp" "$dest"; rm -rf "$dest.old"
+    install_ddraw "$dest"
+    write_registry "$kind"
+    IMPORTED=$kind
+}
+
+install_ddraw() {
+    local d=$1
+    step "Adding cnc-ddraw (sharp fullscreen scaling)" "Đang thêm cnc-ddraw (phóng to toàn màn hình sắc nét)"
+    fetch "$DDRAW_URL" "$DDRAW_SHA" "$CACHE/cnc-ddraw-$DDRAW_VER.zip"
+    local t; for t in "$d" "$d/age2_x1"; do
+        [ -d "$t" ] || continue
+        # repacks often carry an old ddraw.dll / wrappers: ours wins, theirs is kept aside
+        [ -f "$t/ddraw.dll" ] && [ ! -f "$t/ddraw.dll.orig" ] && mv "$t/ddraw.dll" "$t/ddraw.dll.orig"
+        [ -f "$t/ddraw.ini" ] && [ ! -f "$t/ddraw.ini.orig" ] && mv "$t/ddraw.ini" "$t/ddraw.ini.orig"
+        unzip -q -o "$CACHE/cnc-ddraw-$DDRAW_VER.zip" ddraw.dll ddraw.ini 'Shaders/*' 'cnc-ddraw config.exe' -d "$t"
+        ini_set "$t/ddraw.ini" windowed true      # windowed + fullscreen = borderless fullscreen:
+        ini_set "$t/ddraw.ini" fullscreen true    # no monitor mode switch, behaves on multi-screen
+        ini_set "$t/ddraw.ini" maintas true       # keep 4:3, no stretched units
+        ini_set "$t/ddraw.ini" shader 'Shaders\interpolation\fsr.glsl'   # FSR upscale, like the old gamescope setup
+        ini_set "$t/ddraw.ini" adjmouse true
+    done
+}
+
+# ini_set FILE KEY VALUE: set KEY in the [ddraw] section (first occurrence), CRLF kept
+ini_set() {
+    local f=$1 k=$2 v=$3
+    v=${v//\\/\\\\}
+    awk -v k="$k" -v v="$v" 'BEGIN{s=0;done=0}
+        /^\[/{ if(s && !done){print k"="v"\r"; done=1} s=($0 ~ /^\[ddraw\]/) }
+        s && !done && $0 ~ "^"k"=" { print k"="v"\r"; done=1; next }
+        {print}
+        END{ if(s && !done) print k"="v"\r" }' "$f" >"$f.new" && mv "$f.new" "$f"
+}
+
+write_registry() {
+    local kind=$1 reg="$DATA/game.reg" dir
+    if [ "$kind" = aoe1 ]; then
+        dir='C:\\Games\\aoe1'
+        {
+            printf 'Windows Registry Editor Version 5.00\r\n\r\n'
+            printf '[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Games\\Age of Empires\\1.00]\r\n'
+            printf '"CDPath"="%s\\\\"\r\n"InstallationDirectory"="%s"\r\n' "$dir" "$dir"
+            printf '"InstallType"="3"\r\n"Launched"="1"\r\n"PID"="00000-000-0000000-00000"\r\n"Version"="1.0b"\r\n"VersionType"="RetailVersion"\r\n\r\n'
+            printf '[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Microsoft Games\\Age of Empires Expansion\\1.0]\r\n'
+            printf '"EXE Path"="%s"\r\n"InstalledGroup"="3"\r\n"LangID"=dword:00000009\r\n"Launched"="1"\r\n' "$dir"
+            printf '"PID"="00000-000-0000000-00000"\r\n"Version"="1.0"\r\n"VersionType"="RetailVersion"\r\n\r\n'
+        } >"$reg"
+    else
+        dir='C:\\Games\\aoe2'
+        {
+            printf 'Windows Registry Editor Version 5.00\r\n\r\n'
+            printf '[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Microsoft Games\\Age of Empires\\2.0]\r\n'
+            printf '"EXE Path"="%s"\r\n"InstallationDirectory"="%s"\r\n"CDPath"="%s\\\\"\r\n"Launched"="1"\r\n"VersionType"="RetailVersion"\r\n\r\n' "$dir" "$dir" "$dir"
+            printf '[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Microsoft Games\\Age of Empires II: The Conquerors Expansion\\1.0]\r\n'
+            printf '"EXE Path"="%s\\\\age2_x1"\r\n"InstallationDirectory"="%s"\r\n"Launched"="1"\r\n"VersionType"="RetailVersion"\r\n\r\n' "$dir" "$dir"
+        } >"$reg"
+    fi
+    # 32-bit games read the 32-bit registry view: use the 32-bit regedit.
+    # wineserver writes the registry to disk when it stops, so stop it and check.
+    local i; for i in 1 2 3; do
+        w 'C:\windows\syswow64\regedit.exe' /S "$(winpath "$reg")" >/dev/null 2>&1 || true
+        wine_stop
+        grep -q 'Wow6432Node\\\\Microsoft\\\\.*Age of Empires' "$WINEPREFIX/system.reg" && return 0
+    done
+    die "Could not write the game registry keys" "Không ghi được registry cho game"
+}
+
+wine_stop() { "$RUNTIME/bin/wineserver" -k 2>/dev/null || true; "$RUNTIME/bin/wineserver" -w 2>/dev/null || true; }
+
+# ---------------------------------------------------------------- launchers
+installed_kinds() { local k; for k in aoe1 aoe2; do [ -d "$GAMES/$k" ] && echo $k; done; true; }
+
+# exe_for GAME -> path of the exe (relative to the game folder) or empty
+exe_for() {
+    local f
+    case "$1" in
+        aoe1x) has "$GAMES/aoe1" empiresx.exe ;;
+        aoe1)  has "$GAMES/aoe1" empires.exe ;;
+        aoe2x) if f=$(has "$GAMES/aoe2/age2_x1" age2_x1.exe); then echo "age2_x1/$f"
+               else has "$GAMES/aoe2" age2_x1.exe; fi ;;
+        aoe2)  has "$GAMES/aoe2" empires2.exe ;;
+    esac
+    true
+}
+
+default_game() {
+    local g; for g in "$(cfg_get game)" aoe1x aoe1 aoe2x aoe2; do
+        [ -n "$g" ] && [ -n "$(exe_for "$g")" ] && { echo "$g"; return; }
+    done
+}
+
+play() {
+    local game=${1:-} mode=${2:-fullscreen} exe dir
+    [ -x "$WINE" ] && [ -n "$(installed_kinds)" ] || { setup ""; }
+    [ -n "$game" ] || game=$(default_game)
+    [ -n "$game" ] || die "No game installed. Run: aoe-linux setup" "Chưa có game. Chạy: aoe-linux setup"
+    exe=$(exe_for "$game"); [ -n "$exe" ] || die "%s is not installed" "Chưa cài %s" "$game"
+    case $game in aoe1*) dir="$GAMES/aoe1" ;; *) dir="$GAMES/aoe2" ;; esac
+    local ini; ini="$(dirname "$dir/$exe")/ddraw.ini"
+    if [ -f "$ini" ]; then
+        if [ "$mode" = windowed ]; then ini_set "$ini" fullscreen false; else ini_set "$ini" fullscreen true; fi
+        ini_set "$ini" windowed true
+    fi
+    cd "$(dirname "$dir/$exe")"
+    # NOSTARTUP skips the intro videos (they can crash the game)
+    w "$(basename "$exe")" NOSTARTUP >"$LOG" 2>&1 &
+    local pid=$!
+    if ! wait $pid; then
+        # a non-zero exit seconds after start means it never ran: tell the user
+        grep -qiE 'err:|could not load|not found' "$LOG" 2>/dev/null && \
+            die "The game stopped with an error. Log: %s\nTry: aoe-linux doctor" "Game dừng vì lỗi. Log: %s\nThử: aoe-linux doctor" "$LOG"
+    fi
+}
+
+display_settings() {
+    local game exe dir; game=$(default_game); [ -n "$game" ] || die "No game installed" "Chưa có game"
+    case $game in aoe1*) dir="$GAMES/aoe1" ;; *) dir="$GAMES/aoe2" ;; esac
+    exe=$(exe_for "$game"); cd "$(dirname "$dir/$exe")"
+    w "cnc-ddraw config.exe" >/dev/null 2>&1
+}
+
+open_folder() {
+    local k; k=$(installed_kinds | head -1); [ -n "$k" ] || die "No game installed" "Chưa có game"
+    xdg-open "$GAMES/$k" >/dev/null 2>&1 &
+}
+
+# ---------------------------------------------------------------- setup
+setup() {
+    local src=${1:-}
+    if [ -z "$src" ]; then
+        if [ "$GUI" = 1 ]; then src=$(pick_source_gui) || exit 0
+        else
+            src=$(autodetect_source || true)
+            if [ -n "$src" ]; then say "Found: %s" "Tìm thấy: %s" "$src"; fi
+            if [ -t 0 ]; then
+                local ans
+                read -r -p "$(say 'Game .zip, folder or URL [%s]: ' 'File .zip, thư mục hoặc link game [%s]: ' "$src")" ans
+                src=${ans:-$src}
+            fi
+        fi
+        [ -n "$src" ] || die "Tell me where the game is: aoe-linux setup /path/to/game.zip" \
+            "Cho biết game ở đâu: aoe-linux setup /đường/dẫn/game.zip"
+    fi
+    if [ "$GUI" = 1 ]; then
+        # run the real work with a progress window; messages starting with # update its text
+        exec 3> >(zenity --progress --pulsate --auto-close --no-cancel --width=460 --title="Age of Empires" \
+                  --text="$(say 'Setting up...' 'Đang cài đặt...')" 2>/dev/null)
+        PROGRESS_FD=3
+    fi
+    ensure_runtime
+    import_game "$src"
+    write_desktop_entries
+    step "Done" "Xong"
+    if [ -n "${PROGRESS_FD:-}" ]; then echo 100 >&3; exec 3>&-; unset PROGRESS_FD; fi
+    say "Ready. Start it from the app menu (Age of Empires) or run: aoe-linux" \
+        "Xong. Mở game từ menu ứng dụng (Age of Empires) hoặc chạy: aoe-linux"
+    say "Installed: %s" "Đã cài: %s" "$IMPORTED"
+}
+
+self_path() {
+    local p; p=$(command -v aoe-linux 2>/dev/null || true)
+    [ -n "$p" ] || p=$(readlink -f "$0")
+    echo "$p"
+}
+
+# One menu entry per installed game. The main entry is shipped by the package /
+# install.sh; here we add the per-game ones so Rise of Rome and AoE II show up.
+write_desktop_entries() {
+    local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications" bin g name
+    bin=$(self_path); mkdir -p "$apps"
+    for g in aoe1 aoe2x aoe2; do
+        rm -f "$apps/aoe-linux-$g.desktop"
+        [ -n "$(exe_for $g)" ] || continue
+        [ "$g" = "$(default_game)" ] && continue      # the main entry already plays it
+        case $g in
+            aoe1)  name="Age of Empires (bản gốc)"; [ $L = vi ] || name="Age of Empires (original)" ;;
+            aoe2x) name="Age of Empires II: The Conquerors" ;;
+            aoe2)  name="Age of Empires II" ;;
+        esac
+        cat >"$apps/aoe-linux-$g.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$name
+Exec=$bin play $g
+Icon=aoe-linux
+Categories=Game;StrategyGame;
+StartupNotify=true
+EOF
+    done
+    command -v update-desktop-database >/dev/null && update-desktop-database "$apps" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- doctor
+doctor() {
+    local ok=1
+    say "aoe-linux %s" "aoe-linux %s" "$VERSION"
+    say "Data:    %s" "Dữ liệu: %s" "$DATA"
+    if [ -x "$WINE" ]; then say "Wine:    %s" "Wine:    %s" "$("$WINE" --version 2>/dev/null)"
+    else say "Wine:    not downloaded yet" "Wine:    chưa tải"; fi
+    if [ -x "$WINE" ]; then
+        local miss; miss=$(ldd "$RUNTIME/lib/wine/x86_64-unix/"*.so 2>/dev/null | grep 'not found' | sort -u | awk '{print $1}' | tr '\n' ' ')
+        if [ -n "$miss" ]; then ok=0; say "Missing libraries: %s" "Thiếu thư viện: %s" "$miss"; fi
+    fi
+    local k; for k in $(installed_kinds); do say "Game:    %s -> %s" "Game:    %s -> %s" "$k" "$GAMES/$k"; done
+    [ -n "$(installed_kinds)" ] || { ok=0; say "Game:    not imported (aoe-linux setup)" "Game:    chưa nhập (aoe-linux setup)"; }
+    fc-list 2>/dev/null | grep -qi 'Liberation Sans' || { ok=0; say "Fonts:   fonts-liberation missing (sudo apt install fonts-liberation)" "Font:    thiếu fonts-liberation (sudo apt install fonts-liberation)"; }
+    command -v zenity >/dev/null || say "zenity:  missing, setup works from the terminal only" "zenity:  không có, chỉ cài được từ terminal"
+    if command -v glxinfo >/dev/null; then say "GPU:     %s" "GPU:     %s" "$(glxinfo -B 2>/dev/null | sed -n 's/.*renderer string: //p')"; fi
+    [ -f "$LOG" ] && { say "Last run log: %s" "Log lần chạy gần nhất: %s" "$LOG"; tail -5 "$LOG" | sed 's/^/  /'; }
+    [ $ok = 1 ] && say "All good." "Mọi thứ ổn." || return 1
+}
+
+uninstall() {
+    local yes=${1:-}
+    if [ "$yes" != "-y" ]; then
+        if [ "$GUI" = 1 ]; then
+            zenity --question --width=420 --title="Age of Empires" --text="$(say 'Remove the game, its saves and Wine from %s?' 'Xoá game, file save và Wine trong %s?' "$DATA")" 2>/dev/null || exit 0
+        else
+            local a; read -r -p "$(say 'Remove %s (game + saves + Wine)? [y/N] ' 'Xoá %s (game + save + Wine)? [y/N] ' "$DATA")" a
+            case "$a" in y|Y|yes|co|có) ;; *) exit 0 ;; esac
+        fi
+    fi
+    [ -x "$RUNTIME/bin/wineserver" ] && "$RUNTIME/bin/wineserver" -k 2>/dev/null || true
+    rm -rf "$DATA" "$CACHE"
+    rm -f "${XDG_DATA_HOME:-$HOME/.local/share}"/applications/aoe-linux-*.desktop
+    say "Removed. The aoe-linux command and menu entry stay until you remove the package." \
+        "Đã xoá. Lệnh aoe-linux và mục menu còn lại cho tới khi gỡ gói."
+}
+
+usage() { sed -n '2,/^set -euo/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; }
+
+cmd=${1:-play}; [ $# -gt 0 ] && shift
+apply_proxy
+case "$cmd" in
+    proxy)         proxy_cmd "${1:-}" ;;
+    play|run)      play "${1:-}" ;;
+    windowed)      play "${1:-}" windowed ;;
+    setup|import)  setup "${1:-}" ;;
+    display)       display_settings ;;
+    folder)        open_folder ;;
+    doctor)        doctor ;;
+    uninstall)     uninstall "${1:-}" ;;
+    aoe1|aoe1x|aoe2|aoe2x) play "$cmd" ;;
+    -V|--version|version) echo "aoe-linux $VERSION" ;;
+    -h|--help|help) usage ;;
+    *) say "Unknown command: %s (aoe-linux --help)" "Lệnh không hợp lệ: %s (aoe-linux --help)" "$cmd"; exit 2 ;;
+esac

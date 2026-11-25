@@ -1,0 +1,34 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S warning aoe-linux install.sh scripts/build-deb.sh tests/*.sh
+      - name: help and version
+        run: |
+          ./aoe-linux --version
+          ./aoe-linux --help
+          AOE_LANG=vi ./aoe-linux nope || test $? = 2
+      - name: build .deb
+        run: |
+          bash scripts/build-deb.sh
+          dpkg-deb -I dist/*.deb
+          dpkg-deb -c dist/*.deb
+      - name: install.sh into a temp prefix
+        run: |
+          AOE_PREFIX=$RUNNER_TEMP/p sh install.sh
+          test -x $RUNNER_TEMP/p/bin/aoe-linux
+          grep -q "^Exec=$RUNNER_TEMP/p/bin/aoe-linux play" $RUNNER_TEMP/p/share/applications/aoe-linux.desktop
+          test -f $RUNNER_TEMP/p/share/icons/hicolor/256x256/apps/aoe-linux.png
+      - name: no CJK in repo text
+        run: |
+          ! grep -rnP '[\x{3000}-\x{30ff}\x{3400}-\x{9fff}\x{ac00}-\x{d7af}\x{ff00}-\x{ffef}]' \
+              --include='*.md' --include='*.sh' --include='*.desktop' --include='*.svg' --include=aoe-linux .

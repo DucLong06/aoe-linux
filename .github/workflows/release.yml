@@ -1,0 +1,33 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: version matches the tag
+        run: |
+          v=$(sed -n 's/^VERSION="\(.*\)"/\1/p' aoe-linux)
+          test "v$v" = "${GITHUB_REF_NAME}" || { echo "script VERSION=$v but tag=${GITHUB_REF_NAME}"; exit 1; }
+      - name: build .deb
+        run: |
+          bash scripts/build-deb.sh
+          cp dist/aoe-linux_*_all.deb dist/aoe-linux_all.deb
+          (cd dist && sha256sum *.deb > SHA256SUMS)
+      - name: smoke-install in a blank Ubuntu
+        run: |
+          docker run --rm -v "$PWD/dist:/d:ro" ubuntu:24.04 bash -c \
+            'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /d/aoe-linux_all.deb >/dev/null && aoe-linux --version'
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/aoe-linux_*_all.deb dist/aoe-linux_all.deb dist/SHA256SUMS \
+            --title "aoe-linux $GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,35 @@
+[Desktop Entry]
+Type=Application
+Name=Age of Empires
+GenericName=Strategy game
+GenericName[vi]=Game chiến thuật
+Comment=Age of Empires and Rise of Rome on Linux, one click
+Comment[vi]=Đế Chế (Age of Empires) trên Linux, bấm là chơi
+Exec=aoe-linux play
+Icon=aoe-linux
+Terminal=false
+Categories=Game;StrategyGame;
+Keywords=aoe;age;empires;de che;deche;rise of rome;strategy;
+StartupNotify=true
+StartupWMClass=empiresx.exe
+Actions=windowed;display;folder;setup;
+
+[Desktop Action windowed]
+Name=Play in a window
+Name[vi]=Chơi trong cửa sổ
+Exec=aoe-linux windowed
+
+[Desktop Action display]
+Name=Display settings
+Name[vi]=Cài đặt hiển thị
+Exec=aoe-linux display
+
+[Desktop Action folder]
+Name=Open game folder (saves, maps)
+Name[vi]=Mở thư mục game (save, bản đồ)
+Exec=aoe-linux folder
+
+[Desktop Action setup]
+Name=Import the game again
+Name[vi]=Nhập lại game
+Exec=aoe-linux setup

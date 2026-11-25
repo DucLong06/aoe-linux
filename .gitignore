@@ -1,0 +1,6 @@
+dist/
+*.deb
+*.log
+.launch-*.sh
+BRIEF-*.md
+RESULT*.md
