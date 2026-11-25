@@ -11,6 +11,7 @@
 #   aoe-linux proxy [URL|off] save a proxy for downloads (menu launches use it too)
 #   aoe-linux lan             how to play on the LAN + this machine's address
 #   aoe-linux name ["Name"]   show / set the multiplayer player name
+#   aoe-linux ime [on|off]    input method (Unikey, Bamboo...) in game: off by default
 #   aoe-linux repair          redo DirectPlay, registry and menu entries
 #   aoe-linux uninstall       remove the game environment (asks first)
 #
@@ -19,7 +20,7 @@
 # cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
 set -euo pipefail
 
-VERSION="0.1.3"
+VERSION="0.1.4"
 
 # Pinned downloads: name, url, sha256. Bump together, never one without the other.
 WINE_VER="11.22"
@@ -508,6 +509,26 @@ default_game() {
     done
 }
 
+# Input methods (IBus/Fcitx with Unikey, Bamboo, Pinyin...) turn the game's hotkeys
+# into composed text (Telex eats "w", "dd" becomes a letter). The game wants raw
+# English keys, so it starts with no input method; the desktop keeps its own.
+# `aoe-linux ime on` opts out of this.
+no_ime() {
+    [ "$(cfg_get ime)" = on ] && return 0
+    export XMODIFIERS="@im=none"
+    unset GTK_IM_MODULE QT_IM_MODULE SDL_IM_MODULE CLUTTER_IM_MODULE
+}
+
+ime_cmd() {
+    case "${1:-}" in
+        on)  cfg_set ime on;  say "The game will use the desktop input method" "Game sẽ dùng bộ gõ của máy" ;;
+        off) cfg_set ime off; say "The game starts with no input method (English keys)" "Game chạy không bộ gõ (phím tiếng Anh)" ;;
+        "")  if [ "$(cfg_get ime)" = on ]; then say "Input method in game: on" "Bộ gõ trong game: bật"
+             else say "Input method in game: off (default)" "Bộ gõ trong game: tắt (mặc định)"; fi ;;
+        *)   die "Use: aoe-linux ime on|off" "Cách dùng: aoe-linux ime on|off" ;;
+    esac
+}
+
 play() {
     local game=${1:-} mode=${2:-fullscreen} exe dir
     [ -x "$WINE" ] && [ -n "$(installed_kinds)" ] || { setup ""; }
@@ -523,6 +544,7 @@ play() {
         ini_set "$ini" windowed true
     fi
     cd "$(dirname "$dir/$exe")"
+    no_ime
     # NOSTARTUP skips the intro videos (they can crash the game)
     w "$(basename "$exe")" NOSTARTUP >"$LOG" 2>&1 &
     local pid=$!
@@ -668,6 +690,7 @@ case "$cmd" in
     proxy)         proxy_cmd "${1:-}" ;;
     lan)           lan_info ;;
     name)          set_name "${1:-}" ;;
+    ime)           ime_cmd "${1:-}" ;;
     play|run)      play "${1:-}" ;;
     windowed)      play "${1:-}" windowed ;;
     setup|import)  setup "${1:-}" ;;
