@@ -19,7 +19,7 @@
 # cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
 set -euo pipefail
 
-VERSION="0.1.2"
+VERSION="0.1.3"
 
 # Pinned downloads: name, url, sha256. Bump together, never one without the other.
 WINE_VER="11.22"
@@ -98,10 +98,24 @@ fetch() {
     mkdir -p "$(dirname "$dest")"
     good() { echo "$sha  $1" | sha256sum -c --status 2>/dev/null; }
     good "$dest" && return 0
+    local rc bad=0
     for i in 1 2 3 4 5 6 7 8; do
-        curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 -C - -o "$dest.part" "$url" || true
+        rc=0; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 -C - -o "$dest.part" "$url" || rc=$?
         # a complete .part makes curl fail with 416 on resume, so check the file, not curl
         if good "$dest.part"; then mv "$dest.part" "$dest"; return 0; fi
+        # curl finished cleanly but the checksum is wrong: the file on the server is
+        # not the pinned one. Twice in a row = refuse it, never unpack it.
+        if [ "$rc" = 0 ]; then
+            # Google Drive answers with a web page when the file hit its daily download quota
+            if [ "$(head -c 2 "$dest.part" 2>/dev/null)" != "PK" ] && grep -qi '<html' "$dest.part" 2>/dev/null; then
+                rm -f "$dest.part"
+                die "The server sent a web page instead of the file (Google Drive daily download limit?).\nTry again in a few hours, or download it in a browser and copy it to %s" \
+                    "Máy chủ trả về trang web chứ không phải file (Google Drive hết lượt tải trong ngày?).\nThử lại sau vài giờ, hoặc tải bằng trình duyệt rồi chép vào %s" "$dest"
+            fi
+            rm -f "$dest.part"; bad=$((bad + 1))
+            [ $bad -ge 2 ] && die "%s does not match the expected sha256 %s.\nThe file on the server changed; it was deleted and nothing was installed." \
+                "%s không khớp sha256 %s.\nFile trên máy chủ đã bị thay đổi; đã xoá file, không cài gì." "$url" "$sha"
+        fi
         # a .part that is not growing any more is corrupt: start over
         if [ -f "$dest.part" ] && [ $i -ge 3 ] && [ "$(stat -c %s "$dest.part")" = "${last_size:-x}" ]; then rm -f "$dest.part"; fi
         last_size=$(stat -c %s "$dest.part" 2>/dev/null || echo 0)
@@ -229,6 +243,10 @@ pick_source_gui() {
     esac
 }
 
+# unzip exits 1 for warnings only (zips re-packed on Windows often carry
+# "mismatching local filename" notes); only 2 and above is a real failure.
+unzip_ok() { local rc=0; unzip "$@" >/dev/null 2>&1 || rc=$?; [ "$rc" -le 1 ]; }
+
 # direct_url LINK: turn a Google Drive / Dropbox / OneDrive share link into a
 # direct download. Drive's confirm=t skips the "can't scan for viruses" page.
 direct_url() {
@@ -261,7 +279,7 @@ import_game() {
             for i in 1 2 3 4 5 6; do
                 curl -fL --connect-timeout 20 --retry 3 -C - -o "$f" "$url" || true
                 # a share page or quota notice comes back as HTML, not as a zip
-                if [ "$(head -c 2 "$f" 2>/dev/null)" = "PK" ] && unzip -tqq "$f" >/dev/null 2>&1; then ok=1; break; fi
+                if [ "$(head -c 2 "$f" 2>/dev/null)" = "PK" ] && unzip_ok -tqq "$f"; then ok=1; break; fi
                 if grep -qi '<html' "$f" 2>/dev/null; then rm -f "$f"
                     die "The link gives a web page, not the file. Share it as \"Anyone with the link\" and paste it again." \
                         "Link trả về trang web chứ không phải file. Chia sẻ ở chế độ \"Bất kỳ ai có đường liên kết\" rồi dán lại."
@@ -278,7 +296,7 @@ import_game() {
     elif [ -f "$src" ]; then
         step "Unpacking the game" "Đang giải nén game"
         case "${src,,}" in
-            *.zip) unzip -q -o "$src" -d "$tmp" || die "Cannot unpack %s" "Không giải nén được %s" "$src" ;;
+            *.zip) unzip_ok -q -o "$src" -d "$tmp" || die "Cannot unpack %s" "Không giải nén được %s" "$src" ;;
             *.7z|*.rar) command -v 7z >/dev/null || die "Install 7z to unpack %s (sudo apt install p7zip-full)" "Cần 7z để giải nén %s (sudo apt install p7zip-full)" "$src"
                         7z x -y -o"$tmp" "$src" >/dev/null ;;
             *.tar*|*.tgz) tar -xf "$src" -C "$tmp" ;;
@@ -598,6 +616,8 @@ doctor() {
     local ok=1
     say "aoe-linux %s" "aoe-linux %s" "$VERSION"
     say "Data:    %s" "Dữ liệu: %s" "$DATA"
+    say "Cache:   %s" "Tải về:  %s" "$CACHE"
+    say "Config:  %s" "Cấu hình: %s" "$CONF"
     if [ -x "$WINE" ]; then say "Wine:    %s" "Wine:    %s" "$("$WINE" --version 2>/dev/null)"
     else say "Wine:    not downloaded yet" "Wine:    chưa tải"; fi
     if [ -x "$WINE" ]; then
