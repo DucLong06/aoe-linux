@@ -14,6 +14,33 @@ Bottles, Flatpak hay gamescope, không cần sudo, không phải bấm tay từn
 
 ## Cài đặt
 
+Có 3 bước. **Chỉ bước 1 cần link Google Drive**, các bước sau không tự tải game.
+
+### Bước 1: tải file game trước (bằng trình duyệt)
+
+aoe-linux **không chứa game và không tự tải game** (game có bản quyền). Bạn tải
+file zip game về trước:
+
+- Link: https://drive.google.com/file/d/1-9N9TB4zAQj8ssXu_eYm8x4yH-ATPbwa/view
+- Tên file: `game-de-che-1.zip`, khoảng 51 MB (Age of Empires: Rise of Rome, bản repack)
+- sha256: `e109cf5dfe227813b3b90fb787dd4d9189c2da51db0e536e2405af761e9d4fbc`
+
+Nếu Google báo "không thể quét virus" thì bấm **Vẫn tải xuống**. Để file trong
+thư mục **Downloads** (Tải xuống) và giữ
+nguyên tên, aoe-linux sẽ tự tìm thấy. Kiểm tra file không bị đổi:
+
+```sh
+sha256sum ~/Downloads/game-de-che-1.zip
+# phải ra: e109cf5dfe227813b3b90fb787dd4d9189c2da51db0e536e2405af761e9d4fbc
+```
+
+Đã có bản game của mình (zip hoặc thư mục, hoặc đã cài bằng Bottles theo hướng
+dẫn cũ) thì bỏ qua bước này.
+
+### Bước 2: cài aoe-linux
+
+Bước này chỉ cài lệnh `aoe-linux`, icon và menu. Chưa tải game, chưa tải Wine.
+
 ```sh
 wget https://github.com/DucLong06/aoe-linux/releases/latest/download/aoe-linux_all.deb
 sudo apt install ./aoe-linux_all.deb
@@ -25,29 +52,72 @@ Không có sudo thì cài vào `~/.local`:
 curl -fsSL https://raw.githubusercontent.com/DucLong06/aoe-linux/main/install.sh | sh
 ```
 
-Sau đó mở **Age of Empires** trong menu ứng dụng. Lần bấm đầu tiên:
+### Bước 3: mở game
 
-1. Tự tìm game có sẵn trên máy: bản đã cài bằng Bottles theo hướng dẫn cũ, hoặc
-   file `.zip` có tên kiểu `aoe`, `empire`, `de-che` trong Downloads.
+Mở **Age of Empires** trong menu ứng dụng. Lần bấm đầu tiên:
+
+1. Tự tìm game có sẵn trên máy: file `game-de-che-1.zip` ở bước 1 (hoặc zip có tên
+   kiểu `aoe`, `empire`, `de-che` trong Downloads), hoặc bản đã cài bằng Bottles.
+   Hỏi "Dùng bản này?", bấm **Dùng bản này**.
 2. Không thấy thì hỏi game ở đâu: **file .zip**, **thư mục** đã giải nén, hoặc
-   **link tải** (dán thẳng link chia sẻ Google Drive, Dropbox hay OneDrive cũng được).
-3. Tải Wine (~95 MB, một lần, mạng đứt thì tự tải tiếp), dựng môi trường, chép
-   game vào, rồi mở game. Mất khoảng 1–2 phút.
+   **link tải** (dán link chia sẻ Google Drive, Dropbox, OneDrive). Link chỉ được
+   tải khi chính bạn dán vào.
+3. Tải Wine (~95 MB từ GitHub, một lần, mạng đứt thì tự tải tiếp), dựng môi
+   trường, chép game vào, rồi mở game. Mất khoảng 1–2 phút.
 
 Từ lần sau bấm là vào game. Dùng terminal cũng được:
 
 ```sh
-aoe-linux setup ~/Downloads/game-de-che.zip   # nhập game từ file zip
-aoe-linux setup "https://drive.google.com/file/d/<ID>/view"   # hoặc từ link Drive
-aoe-linux                                      # chơi
+aoe-linux setup ~/Downloads/game-de-che-1.zip   # nhập game từ file zip
+aoe-linux                                       # chơi
 ```
 
-### Chia game cho anh em qua Google Drive
+File zip trong Downloads chỉ cần cho lần nhập này. Cài xong xoá được, game đã
+được giải nén sang chỗ khác (xem bên dưới).
+
+### Có phải virus không?
+
+Trong zip là các file `.exe` cũ của Windows: game (`Empiresx.exe`, `Empires.exe`),
+bộ cài DirectPlay `Dplay60a.exe`, cùng vài tiện ích kèm bản repack (bản vá chạy
+không cần đĩa, công cụ chạy cửa sổ). Antivirus trên Windows hay báo nhầm loại bản
+vá không cần đĩa. aoe-linux chỉ chạy **hai file**: `Empiresx.exe` (game) và
+`Dplay60a.exe` (để giải nén DirectPlay). Cả hai chạy trong Wine, trong thư mục
+riêng `~/.local/share/aoe-linux`, không cần sudo và không đụng tới file hệ thống.
+Kiểm tra sha256 như ở bước 1 để chắc file đúng là bản gốc. Không tin thì dùng bản
+game của bạn.
+
+## Cài xong file nằm ở đâu
+
+Ngoài lệnh và icon, mọi thứ nằm trong thư mục nhà của bạn (`~`):
+
+| Thứ gì | Đường dẫn |
+|---|---|
+| Lệnh `aoe-linux` | `/usr/bin/aoe-linux` (gói .deb) hoặc `~/.local/bin/aoe-linux` (cài không sudo) |
+| Icon và mục menu | `/usr/share/applications/aoe-linux.desktop` hoặc `~/.local/share/applications/` |
+| File zip game bạn tải ở bước 1 | `~/Downloads/game-de-che-1.zip` (xoá được sau khi cài) |
+| Wine | `~/.local/share/aoe-linux/wine-11.22/` |
+| Ổ C ảo của Windows | `~/.local/share/aoe-linux/prefix/` |
+| **Game** | `~/.local/share/aoe-linux/prefix/drive_c/Games/aoe1/` (AoE II: `.../Games/aoe2/`) |
+| **File save** | `~/.local/share/aoe-linux/prefix/drive_c/Games/aoe1/savegame/` |
+| File aoe-linux tự tải (Wine, cnc-ddraw, game từ link bạn dán) | `~/.cache/aoe-linux/` |
+| Cấu hình (proxy) | `~/.config/aoe-linux/config` |
+| Log lần chạy gần nhất | `~/.local/share/aoe-linux/last-run.log` |
+
+- `aoe-linux doctor` in ra đúng các đường dẫn này trên máy bạn.
+- `~/.cache/aoe-linux` (~150 MB) xoá được khi đã cài xong.
+- Mở nhanh thư mục game: chuột phải icon → **Mở thư mục game**, hoặc `aoe-linux folder`.
+
+### Chia bản game khác qua Google Drive
+
+Muốn chia bản game khác (AoE II, bản có mod...) cho anh em:
 
 1. Tải file `.zip` của game lên Google Drive.
-2. Bấm **Chia sẻ** → mục *Quyền truy cập chung* chọn **Bất kỳ ai có đường liên kết** → **Sao chép đường liên kết**.
-3. Gửi link cho anh em. Họ cài aoe-linux, bấm icon, chọn **Link tải** và dán link vào
-   (hoặc chạy `aoe-linux setup "<link>"`). Link Drive được tự đổi thành link tải thẳng.
+2. Bấm **Chia sẻ** → mục *Quyền truy cập chung* chọn **Bất kỳ ai có đường liên kết**,
+   quyền **Người xem** (đừng để *Người chỉnh sửa*: ai có link cũng thay được file)
+   → **Sao chép đường liên kết**.
+3. Gửi link cho anh em. Họ tải bằng trình duyệt như bước 1 rồi chọn **File .zip**,
+   hoặc chọn **Link tải** và dán link vào (`aoe-linux setup "<link>"`). Link Drive
+   được tự đổi thành link tải thẳng.
 
 Link phải để chế độ "Bất kỳ ai có đường liên kết", nếu không aoe-linux sẽ báo
 "Link trả về trang web chứ không phải file".
@@ -78,11 +148,10 @@ qua Internet nhưng đây chính là kiểu dùng cho mạng LAN, cứ để ngu
 - Đã thử: hai máy ảo (docker) chung một mạng, cài mới từ đầu. Một máy tạo phòng,
   máy kia để trống địa chỉ, tự tìm thấy phòng, vào phòng, cả hai vào trận.
 
-> Repo không chứa file game (game có bản quyền). Bạn dùng bản game của mình.
-
 ## Mạng cần proxy (công ty, trường học)
 
-Lần đầu chạy, aoe-linux cần tải Wine và cnc-ddraw từ GitHub. Nếu mạng phải đi qua
+Lần đầu chạy, aoe-linux cần tải Wine và cnc-ddraw từ GitHub (file game bạn đã tự
+tải ở bước 1). Nếu mạng phải đi qua
 proxy thì làm thêm các bước sau (thay `http://proxy.congty.vn:8080` bằng proxy
 của bạn):
 
@@ -154,7 +223,7 @@ thêm mục cho AoE II.
 | `aoe-linux` | Chơi (mặc định là Rise of Rome) |
 | `aoe-linux play aoe2 \| aoe2x` | Chơi Age of Empires II / The Conquerors |
 | `aoe-linux windowed` | Chơi trong cửa sổ |
-| `aoe-linux setup [ZIP\|THƯ_MỤC\|LINK]` | Nhập hoặc nhập lại game |
+| `aoe-linux setup [ZIP\|THƯ_MỤC\|LINK]` | Nhập hoặc nhập lại game từ bản của bạn |
 | `aoe-linux display` | Cài đặt hiển thị |
 | `aoe-linux folder` | Mở thư mục game |
 | `aoe-linux doctor` | Kiểm tra máy và bản cài khi có lỗi |
@@ -164,8 +233,7 @@ thêm mục cho AoE II.
 | `aoe-linux repair` | Làm lại DirectPlay, registry, menu khi có trục trặc |
 | `aoe-linux uninstall` | Xoá game, save và Wine (có hỏi trước) |
 
-Mọi thứ nằm trong `~/.local/share/aoe-linux`, file tải nằm trong
-`~/.cache/aoe-linux`. Gỡ hẳn: `aoe-linux uninstall` rồi `sudo apt remove aoe-linux`
+Đường dẫn từng thứ: xem mục [Cài xong file nằm ở đâu](#cài-xong-file-nằm-ở-đâu). Gỡ hẳn: `aoe-linux uninstall` rồi `sudo apt remove aoe-linux`
 (hoặc `sh install.sh --uninstall` nếu cài không sudo).
 
 ## Gặp lỗi
@@ -175,13 +243,22 @@ Mọi thứ nằm trong `~/.local/share/aoe-linux`, file tải nằm trong
 - Chữ trong game bị ô vuông: `sudo apt install fonts-liberation`.
 - Lần đầu bấm không thấy cửa sổ nào: `sudo apt install zenity`, hoặc cài bằng
   terminal với `aoe-linux setup <file.zip>`.
+- `sha256sum` file game ra mã khác mã ở bước 1: file tải bị hỏng hoặc không phải
+  bản gốc. Xoá đi tải lại; vẫn khác thì báo ở Issues.
+- Dán link Drive báo "Link trả về trang web": link chưa chia sẻ công khai, hoặc
+  Google Drive tạm khoá vì quá nhiều lượt tải trong ngày. Tải bằng trình duyệt
+  như bước 1 rồi chọn **File .zip**.
+- Báo "Không giải nén được ... game-de-che-1.zip": bạn đang dùng aoe-linux 0.1.2
+  trở về trước, bản này nhận nhầm zip nén lại trên Windows là hỏng. Cập nhật lên
+  0.1.3 (cài lại gói `.deb` mới nhất) rồi chạy lại.
 - Tạo phòng báo "Unable to create game": chạy `aoe-linux repair` (cài lại DirectPlay).
 - Bản repack tiếng Trung hiện một dòng chữ lỗi font ở màn hình chính. Lỗi có sẵn
   trong bản repack, không ảnh hưởng gì khi chơi.
 
 ## Đã thử
 
-Ubuntu 24.04, bản Rise of Rome: nhập từ zip, vào menu chính, Single Player →
+Ubuntu 24.04, bản Rise of Rome: nhập từ file `game-de-che-1.zip` tải ở bước 1,
+vào menu chính, Single Player →
 Random Map → Start Game, vào trận, chữ rõ. Chơi LAN hai máy (docker) vào trận
 được. Gói `.deb` được thử cài trên một máy
 Ubuntu 24.04 trắng trong docker. Age of Empires II có hỗ trợ nhưng chưa được thử
