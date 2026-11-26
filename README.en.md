@@ -85,7 +85,20 @@ host a game), pre-selects TCP/IP and fills in the player name.
   press OK (searches the LAN) → pick the game → Join → tick I'm Ready!
 - "Internet TCP/IP Connection For DirectPlay" is the right connection type for LAN
   too. Game not found: type the host's IP (`aoe-linux lan` shows it). Rename:
-  `aoe-linux name "New name"`. With ufw on: allow 47624/tcp and 2300:2400 tcp+udp.
+  `aoe-linux name "New name"`.
+
+> [!IMPORTANT]
+> **Open the firewall on EVERY machine** (host and joiners). Windows asks "Allow?"
+> the first time; Ubuntu's `ufw` does not, it silently drops the connection. If
+> `sudo ufw status` says `active`, run on each machine (use your own subnet, see
+> `ip -4 addr`; for a VPN repeat with its subnet, e.g. `10.8.0.0/24`):
+>
+> ```sh
+> sudo ufw allow from 192.168.1.0/24 to any port 47624 proto tcp
+> sudo ufw allow from 192.168.1.0/24 to any port 47624 proto udp
+> sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto tcp
+> sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto udp
+> ```
 - Tested: two fresh installs in docker on one network, host + LAN search + join,
   both reached the game.
 

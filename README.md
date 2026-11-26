@@ -78,6 +78,33 @@ Mọi người cài aoe-linux và cùng một mạng (cùng wifi hoặc cùng sw
 sẵn trong thư mục game, vì DirectPlay của Wine không tạo phòng được), chọn sẵn
 kiểu kết nối TCP/IP và điền sẵn tên người chơi.
 
+> [!IMPORTANT]
+> **Phải mở tường lửa trên TẤT CẢ các máy chơi**, cả máy tạo phòng lẫn máy vào
+> phòng. Nếu không, vào phòng sẽ không thấy phòng hoặc bị treo ở bước Join.
+>
+> Windows tự hiện hộp thoại "Allow" lần đầu chơi nên ít ai để ý. Ubuntu thì không
+> hỏi: nếu bật `ufw` (kiểm tra bằng `sudo ufw status`, thấy `Status: active`) thì
+> phải mở cổng bằng tay. Ví dụ dưới đây dùng dải `192.168.1.0/24`, thay bằng dải mạng của bạn:
+>
+> ```sh
+> # Mạng LAN
+> sudo ufw allow from 192.168.1.0/24 to any port 47624 proto tcp
+> sudo ufw allow from 192.168.1.0/24 to any port 47624 proto udp
+> sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto tcp
+> sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto udp
+>
+> # Chơi qua VPN (ví dụ dải 10.8.0.0/24)
+> sudo ufw allow from 10.8.0.0/24 to any port 47624 proto tcp
+> sudo ufw allow from 10.8.0.0/24 to any port 47624 proto udp
+> sudo ufw allow from 10.8.0.0/24 to any port 2300:2400 proto tcp
+> sudo ufw allow from 10.8.0.0/24 to any port 2300:2400 proto udp
+> ```
+>
+> Xem dải mạng: `ip -4 addr` (ví dụ `192.168.1.25/24` thì dải là `192.168.1.0/24`;
+> `10.0.0.17/16` thì dải là `10.0.0.0/16`). Kiểm tra lại bằng
+> `sudo ufw status numbered`: phải có đủ 4 dòng (47624 tcp, 47624 udp,
+> 2300:2400 tcp, 2300:2400 udp).
+
 **Tạo phòng** (một người):
 Multiplayer → **OK** → **Create** → gõ tên phòng → **OK** → chọn bản đồ → tick
 **I'm Ready!** → **Start Game** khi mọi người đã vào và tick sẵn sàng.
@@ -92,8 +119,8 @@ qua Internet nhưng đây chính là kiểu dùng cho mạng LAN, cứ để ngu
 - Không thấy phòng: gõ địa chỉ IP của máy tạo phòng vào ô hỏi địa chỉ. Xem IP:
   chuột phải icon → **Chơi LAN: hướng dẫn và địa chỉ máy này**, hoặc `aoe-linux lan`.
 - Đổi tên người chơi: `aoe-linux name "Tên mới"`.
-- Máy bật tường lửa (ufw) thì mở cổng DirectPlay:
-  `sudo ufw allow 47624/tcp && sudo ufw allow 2300:2400/tcp && sudo ufw allow 2300:2400/udp`.
+- Vẫn không vào được: kiểm tra lại tường lửa ở **cả hai máy** (mục ở trên). Chơi qua
+  VPN thì DirectPlay vẫn báo IP LAN cho máy kia, nên hai máy nên chung mạng LAN.
 - Đã thử: hai máy ảo (docker) chung một mạng, cài mới từ đầu. Một máy tạo phòng,
   máy kia để trống địa chỉ, tự tìm thấy phòng, vào phòng, cả hai vào trận.
 
