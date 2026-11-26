@@ -27,7 +27,7 @@ Architecture: all
 Maintainer: Hoang Duc Long <hoangduclongg@gmail.com>
 Homepage: https://github.com/DucLong06/aoe-linux
 Depends: bash, curl, xz-utils, unzip, ca-certificates, libx11-6, libxext6, libxrender1, libxrandr2, libxi6, libxcursor1, libxcomposite1, libxinerama1, libfreetype6, libfontconfig1, libgl1, libpulse0, libgnutls30t64 | libgnutls30, fonts-liberation
-Recommends: zenity, libgl1-mesa-dri, xdg-utils
+Recommends: zenity, libgl1-mesa-dri, xdg-utils, pkexec | policykit-1, iproute2, libglib2.0-bin
 Description: Age of Empires (I, Rise of Rome, II) on Linux in one click
  Sets up a portable Wine (WoW64, no 32-bit system libraries needed) and
  cnc-ddraw for sharp borderless fullscreen, imports the game files you

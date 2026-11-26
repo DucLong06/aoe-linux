@@ -89,16 +89,12 @@ host a game), pre-selects TCP/IP and fills in the player name.
 
 > [!IMPORTANT]
 > **Open the firewall on EVERY machine** (host and joiners). Windows asks "Allow?"
-> the first time; Ubuntu's `ufw` does not, it silently drops the connection. If
-> `sudo ufw status` says `active`, run on each machine (use your own subnet, see
-> `ip -4 addr`; for a VPN repeat with its subnet, e.g. `10.99.0.0/24`):
->
-> ```sh
-> sudo ufw allow from 192.168.1.0/24 to any port 47624 proto tcp
-> sudo ufw allow from 192.168.1.0/24 to any port 47624 proto udp
-> sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto tcp
-> sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto udp
-> ```
+> the first time; Ubuntu's `ufw` silently drops the connection. Since 0.1.5,
+> aoe-linux asks once when `ufw` is on ("Open the ports?") and opens 47624 and
+> 2300-2400 (TCP+UDP) for your local networks with the desktop password prompt.
+> `aoe-linux firewall status` prints the exact commands for your networks. Doing it
+> by hand, use the real network address: `10.20.30.200/26` is `10.20.30.192/26`,
+> not `10.20.30.0/26`.
 - Tested: two fresh installs in docker on one network, host + LAN search + join,
   both reached the game.
 
@@ -111,10 +107,11 @@ proxy (replace `http://proxy.example.com:8080` with yours):
 export https_proxy=http://proxy.example.com:8080 http_proxy=http://proxy.example.com:8080
 wget https://github.com/DucLong06/aoe-linux/releases/latest/download/aoe-linux_all.deb
 sudo -E apt install ./aoe-linux_all.deb      # -E passes the proxy to apt
-aoe-linux proxy http://proxy.example.com:8080   # menu launches do not see https_proxy: save it once
 ```
 
-`aoe-linux proxy` shows the saved proxy, `aoe-linux proxy off` removes it. If
+Since 0.1.5 a menu launch picks the proxy in this order: saved with
+`aoe-linux proxy URL`, the `https_proxy` environment, then the desktop's
+Settings > Network > Proxy (manual). `aoe-linux proxy` shows which one is used, `aoe-linux proxy off` removes it. If
 `sudo -E` is not enough, set `Acquire::http::Proxy` and `Acquire::https::Proxy` in
 `/etc/apt/apt.conf.d/95proxy`. Downloads resume after a dropped connection and are
 checked by sha256.
@@ -145,6 +142,7 @@ machine's address**.
 | `aoe-linux doctor` | Check the machine and the install when something breaks |
 | `aoe-linux proxy [URL\|off]` | Save, show or remove the download proxy |
 | `aoe-linux lan` | LAN how-to and this machine's address |
+| `aoe-linux firewall [open\|status\|never\|ask]` | Open the LAN ports in ufw / show the commands |
 | `aoe-linux name ["Name"]` | Show or set the player name |
 | `aoe-linux ime [on\|off]` | Input method in game: off by default (`on` keeps the desktop one) |
 | `aoe-linux repair` | Redo DirectPlay, registry and menu entries |
@@ -156,8 +154,12 @@ Messages follow your system language (English or Vietnamese); force one with `AO
 
 ## Troubleshooting
 
-- Run `aoe-linux doctor`: Wine version, missing libraries, fonts, GPU and the
-  tail of the last run's log (`~/.local/share/aoe-linux/last-run.log`).
+- Run `aoe-linux doctor`: Wine version, missing libraries, fonts, GPU, proxy,
+  firewall and the main errors of the last run.
+- The game closed unexpectedly: aoe-linux shows the log path. The last 5 runs are
+  kept in `~/.local/share/aoe-linux/logs/`; send that file with what you were doing.
+- Download failed: the dialog now says why (DNS, timeout, TLS...) and which proxy
+  was used.
 - Boxes instead of text in game: `sudo apt install fonts-liberation`.
 - Nothing appears on the first click: `sudo apt install zenity`, or set up from
   a terminal with `aoe-linux setup <file.zip>`.
