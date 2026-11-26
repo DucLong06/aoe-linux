@@ -91,7 +91,7 @@ host a game), pre-selects TCP/IP and fills in the player name.
 > **Open the firewall on EVERY machine** (host and joiners). Windows asks "Allow?"
 > the first time; Ubuntu's `ufw` does not, it silently drops the connection. If
 > `sudo ufw status` says `active`, run on each machine (use your own subnet, see
-> `ip -4 addr`; for a VPN repeat with its subnet, e.g. `10.8.0.0/24`):
+> `ip -4 addr`; for a VPN repeat with its subnet, e.g. `10.99.0.0/24`):
 >
 > ```sh
 > sudo ufw allow from 192.168.1.0/24 to any port 47624 proto tcp

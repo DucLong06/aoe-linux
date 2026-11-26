@@ -93,11 +93,11 @@ kiểu kết nối TCP/IP và điền sẵn tên người chơi.
 > sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto tcp
 > sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto udp
 >
-> # Chơi qua VPN (ví dụ dải 10.8.0.0/24)
-> sudo ufw allow from 10.8.0.0/24 to any port 47624 proto tcp
-> sudo ufw allow from 10.8.0.0/24 to any port 47624 proto udp
-> sudo ufw allow from 10.8.0.0/24 to any port 2300:2400 proto tcp
-> sudo ufw allow from 10.8.0.0/24 to any port 2300:2400 proto udp
+> # Chơi qua VPN (ví dụ dải 10.99.0.0/24)
+> sudo ufw allow from 10.99.0.0/24 to any port 47624 proto tcp
+> sudo ufw allow from 10.99.0.0/24 to any port 47624 proto udp
+> sudo ufw allow from 10.99.0.0/24 to any port 2300:2400 proto tcp
+> sudo ufw allow from 10.99.0.0/24 to any port 2300:2400 proto udp
 > ```
 >
 > Xem dải mạng: `ip -4 addr` (ví dụ `192.168.1.25/24` thì dải là `192.168.1.0/24`;
