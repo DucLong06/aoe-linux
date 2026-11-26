@@ -10,6 +10,7 @@
 #   aoe-linux doctor          check this machine and the install
 #   aoe-linux proxy [URL|off] save a proxy for downloads (menu launches use it too)
 #   aoe-linux lan             how to play on the LAN + this machine's address
+#   aoe-linux firewall [open|status|never|ask]  open the LAN ports in ufw
 #   aoe-linux name ["Name"]   show / set the multiplayer player name
 #   aoe-linux ime [on|off]    input method (Unikey, Bamboo...) in game: off by default
 #   aoe-linux repair          redo DirectPlay, registry and menu entries
@@ -20,7 +21,7 @@
 # cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
 set -euo pipefail
 
-VERSION="0.1.4"
+VERSION="0.1.5"
 
 # Pinned downloads: name, url, sha256. Bump together, never one without the other.
 WINE_VER="11.22"
@@ -37,7 +38,8 @@ RUNTIME="$DATA/wine-$WINE_VER"
 WINE="$RUNTIME/bin/wine"
 export WINEPREFIX="$DATA/prefix"
 GAMES="$WINEPREFIX/drive_c/Games"
-LOG="$DATA/last-run.log"
+LOG="$DATA/last-run.log"      # symlink to the newest file in $LOGDIR
+LOGDIR="$DATA/logs"
 
 # ---------------------------------------------------------------- language
 L=en
@@ -62,7 +64,7 @@ die() {
     # shellcheck disable=SC2059
     msg=$(printf "$msg" "$@")
     echo "aoe-linux: $msg" >&2
-    if [ "$GUI" = 1 ]; then zenity --error --title="Age of Empires" --width=420 --text="$msg" 2>/dev/null || true; fi
+    if [ "$GUI" = 1 ]; then zenity --error --no-markup --title="Age of Empires" --width=460 --text="$msg" 2>/dev/null || true; fi
     exit 1
 }
 
@@ -73,19 +75,49 @@ cfg_set() {
     if grep -q "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=$2|" "$CONF"; else echo "$1=$2" >>"$CONF"; fi
 }
 
-# Networks behind a proxy: `aoe-linux proxy http://host:port` saves it, so the
-# menu entry (which does not see the shell's https_proxy) downloads through it too.
+# Networks behind a proxy. A menu launch does not see the shell's https_proxy, so
+# the order is: proxy saved with `aoe-linux proxy URL`, then the environment, then
+# the desktop's own setting (GNOME Settings > Network > Proxy, manual mode).
+PROXY_SOURCE=none
+desktop_proxy() {
+    command -v gsettings >/dev/null 2>&1 || return 1
+    [ "$(gsettings get org.gnome.system.proxy mode 2>/dev/null)" = "'manual'" ] || return 1
+    local s h p
+    for s in https http; do
+        h=$(gsettings get "org.gnome.system.proxy.$s" host 2>/dev/null | tr -d "'")
+        p=$(gsettings get "org.gnome.system.proxy.$s" port 2>/dev/null)
+        if [ -n "$h" ] && [ "${p:-0}" != 0 ]; then
+            case "$h" in *://*) echo "$h:$p" ;; *) echo "http://$h:$p" ;; esac
+            return 0
+        fi
+    done
+    return 1
+}
+
 apply_proxy() {
-    local p; p=$(cfg_get proxy)
-    [ -n "$p" ] && export http_proxy="$p" https_proxy="$p" HTTP_PROXY="$p" HTTPS_PROXY="$p"
-    true
+    local p src
+    p=$(cfg_get proxy); src=saved
+    if [ -z "$p" ]; then
+        if [ -n "${https_proxy:-${HTTPS_PROXY:-}}" ]; then PROXY_SOURCE="env"; return 0; fi
+        p=$(desktop_proxy || true); src=desktop
+    fi
+    [ -n "$p" ] || return 0
+    export http_proxy="$p" https_proxy="$p" HTTP_PROXY="$p" HTTPS_PROXY="$p"
+    PROXY_SOURCE=$src
+}
+
+proxy_desc() {
+    case "$PROXY_SOURCE" in
+        saved)   say "%s (saved with aoe-linux proxy)" "%s (lưu bằng aoe-linux proxy)" "$https_proxy" ;;
+        env)     say "%s (environment)" "%s (biến môi trường)" "${https_proxy:-$HTTPS_PROXY}" ;;
+        desktop) say "%s (desktop Settings > Network > Proxy)" "%s (Settings > Network > Proxy của máy)" "$https_proxy" ;;
+        *)       say "none" "không dùng" ;;
+    esac
 }
 
 proxy_cmd() {
     case "${1:-}" in
-        "") local p; p=$(cfg_get proxy)
-            if [ -n "$p" ]; then say "Proxy: %s" "Proxy: %s" "$p"
-            else say "No proxy saved (environment: %s)" "Chưa lưu proxy (biến môi trường: %s)" "${https_proxy:-${HTTPS_PROXY:-none}}"; fi ;;
+        "") say "Proxy: %s" "Proxy: %s" "$(proxy_desc)" ;;
         off|none|"-") cfg_set proxy ""; say "Proxy removed" "Đã bỏ proxy" ;;
         http://*|https://*|socks5://*|socks5h://*) cfg_set proxy "$1"; say "Proxy saved: %s" "Đã lưu proxy: %s" "$1" ;;
         *) die "Use: aoe-linux proxy http://host:port | off" "Cách dùng: aoe-linux proxy http://máy:cổng | off" ;;
@@ -99,9 +131,14 @@ fetch() {
     mkdir -p "$(dirname "$dest")"
     good() { echo "$sha  $1" | sha256sum -c --status 2>/dev/null; }
     good "$dest" && return 0
-    local rc bad=0
+    local rc bad=0 errf="$dest.err" netfail=0 last_size=""
     for i in 1 2 3 4 5 6 7 8; do
-        rc=0; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 -C - -o "$dest.part" "$url" || rc=$?
+        rc=0
+        if [ -t 2 ]; then
+            curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 -C - -o "$dest.part" "$url" 2> >(tee "$errf" >&2) || rc=$?
+        else
+            curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 3 -C - -o "$dest.part" "$url" 2>"$errf" || rc=$?
+        fi
         # a complete .part makes curl fail with 416 on resume, so check the file, not curl
         if good "$dest.part"; then mv "$dest.part" "$dest"; return 0; fi
         # curl finished cleanly but the checksum is wrong: the file on the server is
@@ -119,15 +156,42 @@ fetch() {
         fi
         # a .part that is not growing any more is corrupt: start over
         if [ -f "$dest.part" ] && [ $i -ge 3 ] && [ "$(stat -c %s "$dest.part")" = "${last_size:-x}" ]; then rm -f "$dest.part"; fi
-        last_size=$(stat -c %s "$dest.part" 2>/dev/null || echo 0)
+        # no connection at all (DNS, refused, timeout, TLS) three times in a row with
+        # nothing downloaded: stop retrying and say why instead of making people wait
+        local now; now=$(stat -c %s "$dest.part" 2>/dev/null || echo 0)
+        case "$rc" in 5|6|7|28|35|60) [ "$now" = "${last_size:-0}" ] && netfail=$((netfail + 1)) ;; *) netfail=0 ;; esac
+        [ "${netfail:-0}" -ge 3 ] && break
+        last_size=$now
         say "Network hiccup, retry %s/8 in 5s" "Mạng chập chờn, thử lại %s/8 sau 5 giây" "$i"; sleep 5
     done
-    die "Could not download %s\nBehind a proxy? aoe-linux proxy http://host:port" \
-        "Không tải được %s\nMạng cần proxy? aoe-linux proxy http://máy:cổng" "$url"
+    fetch_fail "$url" "$rc" "$errf"
+}
+
+# fetch_fail URL CURL_EXIT ERRFILE: say why in plain words, and only blame the
+# network/proxy when the error really is a network one.
+fetch_fail() {
+    local url=$1 rc=$2 detail why net=0
+    detail=$(tr '\r' '\n' <"$3" 2>/dev/null | grep -a 'curl: (' | tail -1)
+    case "$rc" in
+        5|6)   why=$(say "cannot find the server (DNS)" "không tìm thấy máy chủ (DNS)"); net=1 ;;
+        7)     why=$(say "cannot connect to the server" "không kết nối được tới máy chủ"); net=1 ;;
+        28)    why=$(say "the connection timed out" "kết nối quá lâu, hết thời gian chờ"); net=1 ;;
+        35|60) why=$(say "secure connection failed (a proxy or firewall in the way?)" "lỗi kết nối bảo mật (có proxy/tường lửa chặn?)"); net=1 ;;
+        52|56) why=$(say "the connection dropped" "kết nối bị ngắt giữa chừng"); net=1 ;;
+        22)    why=$(say "the server refused the file (HTTP error)" "máy chủ từ chối trả file (lỗi HTTP)") ;;
+        23)    why=$(say "cannot write the file (disk full?)" "không ghi được file (đầy ổ đĩa?)") ;;
+        *)     why=$(say "download error %s" "lỗi tải %s" "$rc") ;;
+    esac
+    local hint=""
+    if [ "$net" = 1 ]; then
+        hint=$(say "Proxy now: %s\nNetwork needs a proxy? aoe-linux proxy http://host:port" \
+                   "Proxy đang dùng: %s\nMạng cần proxy? aoe-linux proxy http://máy:cổng" "$(proxy_desc)")
+    fi
+    die "Could not download %s\nReason: %s\n%s\n%s" "Không tải được %s\nLý do: %s\n%s\n%s" "$url" "$why" "$detail" "$hint"
 }
 
 # ---------------------------------------------------------------- runtime
-w() { WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=;ddraw=n,b" "$WINE" "$@"; }
+w() { WINEDEBUG="${AOE_WINEDEBUG:--all}" WINEDLLOVERRIDES="mscoree,mshtml=;ddraw=n,b" "$WINE" "$@"; }
 
 ensure_runtime() {
     if [ ! -x "$WINE" ]; then
@@ -461,28 +525,36 @@ set_name() {
 
 # LAN help: this machine's addresses and the 4 clicks to host or join
 lan_info() {
-    # the address on the default route is the one other players can reach;
-    # docker/libvirt bridges would only confuse
-    local ips; ips=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src") print $(i+1)}' | head -1)
-    [ -n "$ips" ] || ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|virbr|veth|cni|flannel|lxc|vmnet|tailscale|zt)/ {split($4,a,"/"); print a[1]}' | tr '\n' ' ')
+    # addresses on the LAN/VPN interfaces (docker/libvirt bridges would only confuse)
+    local ips; ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|virbr|veth|cni|flannel|lxc|vmnet|podman)/ {split($4,a,"/"); printf "%s ", a[1]}' | sed 's/ $//')
     [ -n "$ips" ] || ips=$(hostname -I 2>/dev/null || true)
+    local fw fwv firewall_done; firewall_done=$(cfg_get firewall_nets)
+    if ufw_enabled; then
+        fw="Firewall: ufw is ON. Every player must open the LAN ports: aoe-linux firewall (opened so far for: ${firewall_done:-none})"
+        fwv="Tường lửa: ufw đang BẬT. Mọi máy phải mở cổng LAN: aoe-linux firewall (đã mở cho: ${firewall_done:-chưa có})"
+    else
+        fw="Firewall: ufw is off on this machine (other players' firewalls must allow it too)."
+        fwv="Tường lửa: máy này tắt ufw (máy những người chơi khác cũng phải cho phép)."
+    fi
     local txt
     txt=$(say "LAN play (Rise of Rome)
 
-This machine: %s
+This machine: %s   (networks: %s)
 
-Host: Multiplayer -> OK -> Create -> pick map -> Start when everyone shows up.
-Join: Multiplayer -> OK -> Join -> leave the address empty (search the LAN) or type the host's address above -> pick the game.
+Host: Multiplayer -> OK -> Create -> name -> OK -> tick I'm Ready! -> Start Game when everyone is ready.
+Join: Multiplayer -> OK -> Show Games -> leave the address empty (search the LAN) or type the host's address -> OK -> pick the game -> Join -> tick I'm Ready!
 
+$fw
 Everyone must be on the same network. Player name: %s (change: aoe-linux name \"New name\")" \
 "Chơi LAN (Rise of Rome)
 
-Địa chỉ máy này: %s
+Địa chỉ máy này: %s   (mạng: %s)
 
-Tạo phòng: Multiplayer -> OK -> Create -> chọn bản đồ -> Start khi đủ người.
-Vào phòng: Multiplayer -> OK -> Join -> để trống ô địa chỉ (tự tìm trong mạng LAN) hoặc gõ địa chỉ máy chủ phòng -> chọn phòng.
+Tạo phòng: Multiplayer -> OK -> Create -> đặt tên -> OK -> tick I'm Ready! -> Start Game khi mọi người sẵn sàng.
+Vào phòng: Multiplayer -> OK -> Show Games -> để trống ô địa chỉ (tự tìm trong LAN) hoặc gõ địa chỉ máy tạo phòng -> OK -> chọn phòng -> Join -> tick I'm Ready!
 
-Mọi người phải cùng một mạng. Tên người chơi: %s (đổi: aoe-linux name \"Tên mới\")" "$ips" "$(player_name)")
+$fwv
+Mọi người phải cùng một mạng. Tên người chơi: %s (đổi: aoe-linux name \"Tên mới\")" "$ips" "$(lan_nets)" "$(player_name)")
     if [ "$GUI" = 1 ]; then zenity --info --title="Age of Empires" --width=520 --no-markup --text="$txt" 2>/dev/null || true
     else echo "$txt"; fi
 }
@@ -545,14 +617,117 @@ play() {
     fi
     cd "$(dirname "$dir/$exe")"
     no_ime
+    if [[ $game == aoe1* ]]; then firewall_check; fi
+    # One log per run, the last 5 kept, with Wine's error channel on so a crash
+    # leaves something to read (WINEDEBUG=-all would leave nothing).
+    mkdir -p "$LOGDIR"
+    local run; run="$LOGDIR/play-$(date +%Y%m%d-%H%M%S).log"
+    {
+        echo "# aoe-linux $VERSION | $game $mode | $(date '+%F %T')"
+        echo "# session=${XDG_SESSION_TYPE:-?} display=${DISPLAY:-} wayland=${WAYLAND_DISPLAY:-} ime=$(cfg_get ime)"
+        if command -v xrandr >/dev/null 2>&1; then xrandr --listmonitors 2>/dev/null | sed 's/^/# /'; fi
+    } >"$run"
+    ln -sfn "$run" "$LOG"
+    # shellcheck disable=SC2012
+    ls -1t "$LOGDIR"/play-*.log 2>/dev/null | tail -n +6 | xargs -r rm -f
+    local t0 rc=0; t0=$(date +%s)
     # NOSTARTUP skips the intro videos (they can crash the game)
-    w "$(basename "$exe")" NOSTARTUP >"$LOG" 2>&1 &
-    local pid=$!
-    if ! wait $pid; then
-        # a non-zero exit seconds after start means it never ran: tell the user
-        grep -qiE 'err:|could not load|not found' "$LOG" 2>/dev/null && \
-            die "The game stopped with an error. Log: %s\nTry: aoe-linux doctor" "Game dừng vì lỗi. Log: %s\nThử: aoe-linux doctor" "$LOG"
+    AOE_WINEDEBUG="err+all,warn+seh,fixme-all" w "$(basename "$exe")" NOSTARTUP >>"$run" 2>&1 || rc=$?
+    local secs=$(( $(date +%s) - t0 ))
+    echo "# exit=$rc after ${secs}s" >>"$run"
+    if [ "$rc" != 0 ] || grep -qE 'Unhandled exception|Unhandled page fault|wine: Unhandled' "$run"; then
+        echo "# CRASH" >>"$run"
+        local msg
+        msg=$(say "The game closed unexpectedly after %s s.\nLog: %s\nSend this file when reporting the problem (aoe-linux doctor shows the key lines)." \
+                  "Game bị thoát đột ngột sau %s giây.\nLog: %s\nGửi file này khi báo lỗi (aoe-linux doctor in ra các dòng chính)." "$secs" "$run")
+        echo "aoe-linux: $msg" >&2
+        if [ "$GUI" = 1 ]; then zenity --warning --no-markup --title="Age of Empires" --width=480 --text="$msg" 2>/dev/null || true; fi
+        return 1
     fi
+}
+
+# ---------------------------------------------------------------- firewall (LAN)
+# DirectPlay: the host listens on 47624 and every player on 2300-2400, TCP and UDP,
+# and the host connects BACK to the joiner. Ubuntu's ufw drops that silently, while
+# Windows asks "Allow?" once. Same idea here: ask once per network, open the ports
+# for the local subnets only, with the desktop's password prompt.
+ufw_enabled() { grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; }
+
+# local subnets other players can be on (LAN + VPN), container/VM bridges skipped
+lan_nets() {
+    ip -4 route show proto kernel scope link 2>/dev/null \
+        | awk '{dev=""; for(i=1;i<NF;i++) if($i=="dev") dev=$(i+1)} dev !~ /^(docker|br-|virbr|veth|cni|flannel|lxc|vmnet|podman|lo)/ {print $1}' \
+        | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+firewall_rules() {   # NETS... -> the ufw commands, one per line
+    local n
+    for n in "$@"; do
+        echo "ufw allow from $n to any port 47624 proto tcp"
+        echo "ufw allow from $n to any port 47624 proto udp"
+        echo "ufw allow from $n to any port 2300:2400 proto tcp"
+        echo "ufw allow from $n to any port 2300:2400 proto udp"
+    done
+}
+
+firewall_open() {    # open now, for the current networks
+    local nets; nets=$(lan_nets)
+    [ -n "$nets" ] || { say "No local network found" "Không thấy mạng nội bộ nào"; return 1; }
+    # shellcheck disable=SC2086
+    local cmds; cmds=$(firewall_rules $nets | tr '\n' ';')
+    local rc=0
+    if [ "$GUI" = 1 ] && command -v pkexec >/dev/null 2>&1; then
+        pkexec /bin/sh -c "$cmds" >/dev/null 2>&1 || rc=$?
+    else
+        say "Opening the DirectPlay ports for: %s (needs your password)" "Mở cổng DirectPlay cho: %s (cần mật khẩu)" "$nets"
+        sudo /bin/sh -c "$cmds" >/dev/null || rc=$?
+    fi
+    if [ "$rc" = 0 ]; then
+        cfg_set firewall_nets "$nets"
+        say "LAN ports open for: %s" "Đã mở cổng LAN cho: %s" "$nets"
+    else
+        say "Ports not opened (cancelled or no permission)" "Chưa mở cổng (đã huỷ hoặc không có quyền)"
+        return 1
+    fi
+}
+
+# before an AoE1 launch: ask once when ufw is on and this network is not opened yet
+firewall_check() {
+    ufw_enabled || return 0
+    [ "$(cfg_get firewall)" = never ] && return 0
+    local nets opened n missing=""
+    nets=$(lan_nets); opened=" $(cfg_get firewall_nets) "
+    for n in $nets; do case "$opened" in *" $n "*) ;; *) missing="$missing $n" ;; esac; done
+    [ -n "$missing" ] || return 0
+    [ "$GUI" = 1 ] || { say "Firewall (ufw) is on: LAN games may not work. Run: aoe-linux firewall" \
+                           "Tường lửa (ufw) đang bật: có thể không chơi LAN được. Chạy: aoe-linux firewall"; return 0; }
+    local ans=0
+    zenity --question --no-markup --title="Age of Empires" --width=480 \
+        --ok-label="$(say 'Open the ports' 'Mở cổng')" --cancel-label="$(say 'Not now' 'Để sau')" \
+        --extra-button="$(say "Don't ask again" 'Không hỏi lại')" \
+        --text="$(say "The firewall (ufw) blocks LAN games.\nOpen the DirectPlay ports (47624, 2300-2400) for your local network%s?\nYou will be asked for your password." \
+                      "Tường lửa (ufw) đang chặn chơi LAN.\nMở cổng DirectPlay (47624, 2300-2400) cho mạng nội bộ%s?\nMáy sẽ hỏi mật khẩu của bạn." "$missing")" \
+        >"$DATA/.fw-answer" 2>/dev/null || ans=$?
+    if [ "$ans" = 0 ]; then firewall_open || true
+    elif grep -q . "$DATA/.fw-answer" 2>/dev/null; then cfg_set firewall never
+    fi
+    rm -f "$DATA/.fw-answer"
+}
+
+firewall_cmd() {
+    case "${1:-}" in
+        ""|on|open) firewall_open ;;
+        never|off)  cfg_set firewall never; say "Will not ask about the firewall again" "Sẽ không hỏi về tường lửa nữa" ;;
+        ask)        cfg_set firewall ""; cfg_set firewall_nets ""; say "Will ask again on the next launch" "Lần chơi tới sẽ hỏi lại" ;;
+        status)
+            if ufw_enabled; then say "ufw: on" "ufw: đang bật"; else say "ufw: off (nothing to do)" "ufw: tắt (không cần làm gì)"; fi
+            say "Local networks: %s" "Mạng nội bộ: %s" "$(lan_nets)"
+            say "Opened by aoe-linux for: %s" "aoe-linux đã mở cổng cho: %s" "$(cfg_get firewall_nets)"
+            say "Commands (to run by hand with sudo):" "Lệnh (chạy tay với sudo):"
+            # shellcheck disable=SC2046
+            firewall_rules $(lan_nets) | sed 's/^/  sudo /' ;;
+        *) die "Use: aoe-linux firewall [open|status|never|ask]" "Cách dùng: aoe-linux firewall [open|status|never|ask]" ;;
+    esac
 }
 
 display_settings() {
@@ -661,7 +836,18 @@ doctor() {
         *) ok=0; say "Fonts:   fonts-liberation missing (sudo apt install fonts-liberation)" "Font:    thiếu fonts-liberation (sudo apt install fonts-liberation)" ;; esac
     command -v zenity >/dev/null || say "zenity:  missing, setup works from the terminal only" "zenity:  không có, chỉ cài được từ terminal"
     if command -v glxinfo >/dev/null; then say "GPU:     %s" "GPU:     %s" "$(glxinfo -B 2>/dev/null | sed -n 's/.*renderer string: //p')"; fi
-    [ -f "$LOG" ] && { say "Last run log: %s" "Log lần chạy gần nhất: %s" "$LOG"; tail -5 "$LOG" | sed 's/^/  /'; }
+    say "Proxy:   %s" "Proxy:   %s" "$(proxy_desc)"
+    if ufw_enabled; then say "Firewall: ufw on, LAN ports opened for: %s (aoe-linux firewall status)" "Tường lửa: ufw bật, đã mở cổng LAN cho: %s (aoe-linux firewall status)" "$(cfg_get firewall_nets | grep . || echo -)"; fi
+    if [ -e "$LOG" ]; then
+        local real; real=$(readlink -f "$LOG")
+        say "Last run log: %s" "Log lần chơi gần nhất: %s" "$real"
+        grep -E '^# (aoe-linux|exit|CRASH)' "$real" | sed 's/^/  /'
+        # the distinct Wine errors, most frequent first, minus GPU/EGL noise
+        grep -aE ':(err|warn):' "$real" | grep -avE 'libEGL|NtUserChangeDisplaySettings|winemenubuilder' \
+            | sed -E 's/^[0-9a-f]{4}://' | sort | uniq -c | sort -rn | head -8 | sed 's/^/  /'
+        local n; n=$(grep -l '^# CRASH' "$LOGDIR"/play-*.log 2>/dev/null | wc -l)
+        [ "$n" -gt 0 ] && say "Crashes in the last 5 runs: %s (logs in %s)" "Số lần crash trong 5 lần chơi gần nhất: %s (log ở %s)" "$n" "$LOGDIR"
+    fi
     [ $ok = 1 ] && say "All good." "Mọi thứ ổn." || return 1
 }
 
@@ -688,6 +874,7 @@ cmd=${1:-play}; [ $# -gt 0 ] && shift
 apply_proxy
 case "$cmd" in
     proxy)         proxy_cmd "${1:-}" ;;
+    firewall)      firewall_cmd "${1:-}" ;;
     lan)           lan_info ;;
     name)          set_name "${1:-}" ;;
     ime)           ime_cmd "${1:-}" ;;

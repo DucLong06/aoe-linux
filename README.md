@@ -82,28 +82,25 @@ kiểu kết nối TCP/IP và điền sẵn tên người chơi.
 > **Phải mở tường lửa trên TẤT CẢ các máy chơi**, cả máy tạo phòng lẫn máy vào
 > phòng. Nếu không, vào phòng sẽ không thấy phòng hoặc bị treo ở bước Join.
 >
-> Windows tự hiện hộp thoại "Allow" lần đầu chơi nên ít ai để ý. Ubuntu thì không
-> hỏi: nếu bật `ufw` (kiểm tra bằng `sudo ufw status`, thấy `Status: active`) thì
-> phải mở cổng bằng tay. Ví dụ dưới đây dùng dải `192.168.1.0/24`, thay bằng dải mạng của bạn:
+> Windows tự hiện hộp thoại "Allow" lần đầu chơi nên ít ai để ý. Ubuntu bật `ufw`
+> thì chặn im lặng. Từ bản 0.1.5, khi mở game mà `ufw` đang bật, aoe-linux **tự hỏi**
+> *"Tường lửa đang chặn chơi LAN. Mở cổng?"*: bấm **Mở cổng**, nhập mật khẩu là xong
+> (chỉ mở cho mạng nội bộ máy đang dùng, cả LAN lẫn VPN). Bấm nhầm "Không hỏi lại"
+> thì chạy `aoe-linux firewall` để mở bằng tay.
+>
+> `aoe-linux firewall status` in ra đúng các lệnh cho mạng của máy bạn. Muốn tự gõ thì
+> phải dùng **đúng dải mạng**, ví dụ máy `192.168.1.25/24` thì dải là `192.168.1.0/24`:
 >
 > ```sh
-> # Mạng LAN
 > sudo ufw allow from 192.168.1.0/24 to any port 47624 proto tcp
 > sudo ufw allow from 192.168.1.0/24 to any port 47624 proto udp
 > sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto tcp
 > sudo ufw allow from 192.168.1.0/24 to any port 2300:2400 proto udp
->
-> # Chơi qua VPN (ví dụ dải 10.99.0.0/24)
-> sudo ufw allow from 10.99.0.0/24 to any port 47624 proto tcp
-> sudo ufw allow from 10.99.0.0/24 to any port 47624 proto udp
-> sudo ufw allow from 10.99.0.0/24 to any port 2300:2400 proto tcp
-> sudo ufw allow from 10.99.0.0/24 to any port 2300:2400 proto udp
 > ```
 >
-> Xem dải mạng: `ip -4 addr` (ví dụ `192.168.1.25/24` thì dải là `192.168.1.0/24`;
-> `10.0.0.17/16` thì dải là `10.0.0.0/16`). Kiểm tra lại bằng
-> `sudo ufw status numbered`: phải có đủ 4 dòng (47624 tcp, 47624 udp,
-> 2300:2400 tcp, 2300:2400 udp).
+> Cẩn thận với mạng không phải `/24`: máy `10.20.30.200/26` thì dải là
+> `10.20.30.192/26`, **không phải** `10.20.30.0/26` (dải đó không chứa máy của bạn,
+> mở cũng như không). Không chắc thì dùng `aoe-linux firewall status`.
 
 **Tạo phòng** (một người):
 Multiplayer → **OK** → **Create** → gõ tên phòng → **OK** → chọn bản đồ → tick
@@ -119,8 +116,9 @@ qua Internet nhưng đây chính là kiểu dùng cho mạng LAN, cứ để ngu
 - Không thấy phòng: gõ địa chỉ IP của máy tạo phòng vào ô hỏi địa chỉ. Xem IP:
   chuột phải icon → **Chơi LAN: hướng dẫn và địa chỉ máy này**, hoặc `aoe-linux lan`.
 - Đổi tên người chơi: `aoe-linux name "Tên mới"`.
-- Vẫn không vào được: kiểm tra lại tường lửa ở **cả hai máy** (mục ở trên). Chơi qua
-  VPN thì DirectPlay vẫn báo IP LAN cho máy kia, nên hai máy nên chung mạng LAN.
+- Vẫn không vào được: chạy `aoe-linux firewall status` ở **cả hai máy** và kiểm tra dải
+  mạng (mục ở trên). Chơi qua VPN thì DirectPlay vẫn báo IP LAN cho máy kia, nên hai
+  máy nên chung mạng LAN.
 - Đã thử: hai máy ảo (docker) chung một mạng, cài mới từ đầu. Một máy tạo phòng,
   máy kia để trống địa chỉ, tự tìm thấy phòng, vào phòng, cả hai vào trận.
 
@@ -148,22 +146,21 @@ echo 'Acquire::http::Proxy "http://proxy.congty.vn:8080"; Acquire::https::Proxy 
 
 Cài không sudo cũng vậy: `export https_proxy=...` rồi chạy dòng `curl ... | sh`.
 
-**2. Lưu proxy cho aoe-linux**
+**2. Proxy cho aoe-linux**
 
-Icon trong menu không đọc biến `https_proxy` của terminal, nên phải lưu proxy lại
-một lần:
+Từ bản 0.1.5, bấm icon là aoe-linux tự dùng proxy theo thứ tự: proxy đã lưu bằng
+`aoe-linux proxy`, rồi biến `https_proxy`, rồi **proxy đặt trong Settings → Network
+→ Proxy** của máy (chế độ Manual). Máy đã đặt proxy trong Settings thì không phải làm
+gì thêm. Nếu không, lưu một lần:
 
 ```sh
 aoe-linux proxy http://proxy.congty.vn:8080   # lưu
-aoe-linux proxy                               # xem đang dùng proxy nào
-aoe-linux proxy off                           # bỏ proxy (khi về mạng nhà)
+aoe-linux proxy                               # xem đang dùng proxy nào, lấy từ đâu
+aoe-linux proxy off                           # bỏ proxy đã lưu
 ```
 
-Proxy được lưu ở `~/.config/aoe-linux/config`. Wine chỉ tải một lần, sau đó chơi
-không cần mạng. Riêng chơi LAN thì không đi qua proxy.
-
-Mạng chập chờn cũng không sao: file tải dở được giữ lại, chạy lại là tải tiếp, và
-mọi file đều được kiểm tra sha256 trước khi dùng.
+Tải hỏng thì cửa sổ báo lỗi ghi rõ lý do (không tìm thấy máy chủ, hết thời gian chờ,
+lỗi kết nối bảo mật...) kèm proxy đang dùng.
 
 ## Menu chuột phải
 
@@ -191,6 +188,7 @@ thêm mục cho AoE II.
 | `aoe-linux doctor` | Kiểm tra máy và bản cài khi có lỗi |
 | `aoe-linux proxy [URL\|off]` | Lưu, xem hoặc bỏ proxy để tải |
 | `aoe-linux lan` | Hướng dẫn chơi LAN và địa chỉ IP máy này |
+| `aoe-linux firewall [open\|status\|never\|ask]` | Mở cổng LAN trong ufw, xem lệnh cho mạng của máy, tắt/bật câu hỏi |
 | `aoe-linux name ["Tên"]` | Xem hoặc đổi tên người chơi |
 | `aoe-linux ime [on\|off]` | Bộ gõ trong game: mặc định tắt (`on` để dùng bộ gõ của máy) |
 | `aoe-linux repair` | Làm lại DirectPlay, registry, menu khi có trục trặc |
@@ -201,8 +199,12 @@ Gỡ hẳn: `aoe-linux uninstall` rồi `sudo apt remove aoe-linux`
 
 ## Gặp lỗi
 
-- Chạy `aoe-linux doctor`: báo phiên bản Wine, thư viện còn thiếu, font, GPU
-  và mấy dòng cuối của log lần chạy gần nhất (`~/.local/share/aoe-linux/last-run.log`).
+- Chạy `aoe-linux doctor`: báo phiên bản Wine, thư viện còn thiếu, font, GPU, proxy,
+  tường lửa, và các lỗi chính của lần chơi gần nhất.
+- **Game bị thoát đột ngột (crash):** aoe-linux hiện thông báo kèm đường dẫn file log.
+  Log của **5 lần chơi gần nhất** nằm trong `~/.local/share/aoe-linux/logs/`
+  (`last-run.log` trỏ tới lần mới nhất). Gửi file đó kèm việc đang làm lúc crash
+  (Alt+Tab, đổi màn hình, đang chơi LAN...) khi báo lỗi.
 - Chữ trong game bị ô vuông: `sudo apt install fonts-liberation`.
 - Lần đầu bấm không thấy cửa sổ nào: `sudo apt install zenity`, hoặc cài bằng
   terminal với `aoe-linux setup <file.zip>`.
