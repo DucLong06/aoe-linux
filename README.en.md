@@ -143,6 +143,7 @@ machine's address**.
 | `aoe-linux proxy [URL\|off]` | Save, show or remove the download proxy |
 | `aoe-linux lan` | LAN how-to and this machine's address |
 | `aoe-linux firewall [open\|status\|never\|ask]` | Open the LAN ports in ufw / show the commands |
+| `aoe-linux perf [smooth\|sharp\|safe]` | `smooth` (default): all cores + OpenGL. `sharp`: + FSR upscaling (dedicated GPU). `safe`: old single-core mode |
 | `aoe-linux name ["Name"]` | Show or set the player name |
 | `aoe-linux ime [on\|off]` | Input method in game: off by default (`on` keeps the desktop one) |
 | `aoe-linux repair` | Redo DirectPlay, registry and menu entries |
@@ -153,6 +154,13 @@ To remove it all: `aoe-linux uninstall`, then
 Messages follow your system language (English or Vietnamese); force one with `AOE_LANG=en`.
 
 ## Troubleshooting
+
+- Stuttering while scrolling: 0.1.6 defaults to `aoe-linux perf smooth`. cnc-ddraw's
+  stock `singlecpu=true` pins the game to one core and `renderer=auto` goes through
+  Direct3D9, which Wine translates to OpenGL anyway. All cores + direct OpenGL gave
+  about 60% more frames while scrolling. The FSR upscaler is heavy on integrated GPUs,
+  so the default is bilinear again; `aoe-linux perf sharp` brings FSR back. If the game freezes or loses sound, use
+  `aoe-linux perf safe`.
 
 - Run `aoe-linux doctor`: Wine version, missing libraries, fonts, GPU, proxy,
   firewall and the main errors of the last run.
