@@ -189,6 +189,7 @@ thêm mục cho AoE II.
 | `aoe-linux proxy [URL\|off]` | Lưu, xem hoặc bỏ proxy để tải |
 | `aoe-linux lan` | Hướng dẫn chơi LAN và địa chỉ IP máy này |
 | `aoe-linux firewall [open\|status\|never\|ask]` | Mở cổng LAN trong ufw, xem lệnh cho mạng của máy, tắt/bật câu hỏi |
+| `aoe-linux perf [smooth\|sharp\|safe]` | `smooth` (mặc định): mọi nhân CPU + OpenGL, mượt. `sharp`: thêm FSR cho nét hơn (cần card rời). `safe`: chế độ cũ, một nhân CPU |
 | `aoe-linux name ["Tên"]` | Xem hoặc đổi tên người chơi |
 | `aoe-linux ime [on\|off]` | Bộ gõ trong game: mặc định tắt (`on` để dùng bộ gõ của máy) |
 | `aoe-linux repair` | Làm lại DirectPlay, registry, menu khi có trục trặc |
@@ -198,6 +199,15 @@ Gỡ hẳn: `aoe-linux uninstall` rồi `sudo apt remove aoe-linux`
 (hoặc `sh install.sh --uninstall` nếu cài không sudo).
 
 ## Gặp lỗi
+
+- **Game giật khi cuộn bản đồ:** từ 0.1.6 mặc định đã là chế độ mượt (`aoe-linux perf smooth`).
+  Bản cnc-ddraw gốc ép cả game chạy trên **một nhân CPU** (`singlecpu=true`) và đi qua
+  Direct3D9, mà trên Wine thì Direct3D9 lại phải dịch sang OpenGL. Đổi sang dùng mọi
+  nhân + OpenGL trực tiếp thì đo được nhiều hơn khoảng 60% khung hình khi cuộn bản đồ.
+  Bộ phóng ảnh FSR (bản 0.1.1 tới 0.1.5) nặng với card đồ họa onboard, nên mặc định quay về
+  bilinear như bản repack. Máy có card rời muốn nét hơn thì dùng `aoe-linux perf sharp`.
+  Nếu ở chế độ mượt mà game bị đơ hoặc mất tiếng, chạy `aoe-linux perf safe` để quay
+  về chế độ cũ.
 
 - Chạy `aoe-linux doctor`: báo phiên bản Wine, thư viện còn thiếu, font, GPU, proxy,
   tường lửa, và các lỗi chính của lần chơi gần nhất.

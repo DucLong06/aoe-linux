@@ -11,6 +11,7 @@
 #   aoe-linux proxy [URL|off] save a proxy for downloads (menu launches use it too)
 #   aoe-linux lan             how to play on the LAN + this machine's address
 #   aoe-linux firewall [open|status|never|ask]  open the LAN ports in ufw
+#   aoe-linux perf [smooth|sharp|safe]  smooth = all cores + OpenGL (default), sharp = + FSR, safe = old pinned mode
 #   aoe-linux name ["Name"]   show / set the multiplayer player name
 #   aoe-linux ime [on|off]    input method (Unikey, Bamboo...) in game: off by default
 #   aoe-linux repair          redo DirectPlay, registry and menu entries
@@ -21,7 +22,7 @@
 # cnc-ddraw for crisp borderless fullscreen scaling, and the game files.
 set -euo pipefail
 
-VERSION="0.1.5"
+VERSION="0.1.6"
 
 # Pinned downloads: name, url, sha256. Bump together, never one without the other.
 WINE_VER="11.22"
@@ -601,6 +602,33 @@ ime_cmd() {
     esac
 }
 
+# Smoothness. cnc-ddraw ships singlecpu=true (pins the whole game, its render
+# thread and the GL driver threads to CPU0) and renderer=auto (Direct3D9, which
+# Wine turns into OpenGL again). On Wine both cost frames: measured +63% frames
+# while scrolling with singlecpu=false + renderer=opengl. The FSR upscaler is
+# heavy on integrated GPUs, so the default is the repack's own bilinear shader.
+#   smooth (default): all cores, OpenGL, bilinear
+#   sharp:  all cores, OpenGL, FSR (crisper, needs a real GPU)
+#   safe:   the old pinned mode, for a game that freezes or loses sound
+apply_perf() {
+    local ini=$1 bil='Shaders\interpolation\bilinear.glsl'
+    case "$(cfg_get perf)" in
+        safe)  ini_set "$ini" singlecpu true;  ini_set "$ini" renderer auto;   ini_set "$ini" shader "$bil" ;;
+        sharp) ini_set "$ini" singlecpu false; ini_set "$ini" renderer opengl; ini_set "$ini" shader 'Shaders\interpolation\fsr.glsl' ;;
+        *)     ini_set "$ini" singlecpu false; ini_set "$ini" renderer opengl; ini_set "$ini" shader "$bil" ;;
+    esac
+}
+
+perf_cmd() {
+    case "${1:-}" in
+        smooth) cfg_set perf smooth; say "Smooth mode: all CPU cores, OpenGL, light upscaling (default)" "Chế độ mượt: dùng mọi nhân CPU, OpenGL, phóng ảnh nhẹ (mặc định)" ;;
+        sharp)  cfg_set perf sharp;  say "Sharp mode: like smooth but FSR upscaling (crisper, needs a dedicated GPU)" "Chế độ nét: như mượt nhưng phóng ảnh bằng FSR (nét hơn, cần card đồ họa rời)" ;;
+        safe)   cfg_set perf safe;   say "Safe mode: one CPU core, renderer auto (use it if the game freezes or sound breaks)" "Chế độ an toàn: một nhân CPU, renderer auto (dùng khi game bị đơ hoặc mất tiếng)" ;;
+        "")     say "Mode: %s (smooth|sharp|safe)" "Chế độ: %s (smooth|sharp|safe)" "$(cfg_get perf | grep . || echo smooth)" ;;
+        *)      die "Use: aoe-linux perf smooth|sharp|safe" "Cách dùng: aoe-linux perf smooth|sharp|safe" ;;
+    esac
+}
+
 play() {
     local game=${1:-} mode=${2:-fullscreen} exe dir
     [ -x "$WINE" ] && [ -n "$(installed_kinds)" ] || { setup ""; }
@@ -614,6 +642,7 @@ play() {
     if [ -f "$ini" ]; then
         if [ "$mode" = windowed ]; then ini_set "$ini" fullscreen false; else ini_set "$ini" fullscreen true; fi
         ini_set "$ini" windowed true
+        apply_perf "$ini"
     fi
     cd "$(dirname "$dir/$exe")"
     no_ime
@@ -837,6 +866,7 @@ doctor() {
     command -v zenity >/dev/null || say "zenity:  missing, setup works from the terminal only" "zenity:  không có, chỉ cài được từ terminal"
     if command -v glxinfo >/dev/null; then say "GPU:     %s" "GPU:     %s" "$(glxinfo -B 2>/dev/null | sed -n 's/.*renderer string: //p')"; fi
     say "Proxy:   %s" "Proxy:   %s" "$(proxy_desc)"
+    say "Mode:    %s (aoe-linux perf)" "Chế độ:  %s (aoe-linux perf)" "$(cfg_get perf | grep . || echo smooth)"
     if ufw_enabled; then say "Firewall: ufw on, LAN ports opened for: %s (aoe-linux firewall status)" "Tường lửa: ufw bật, đã mở cổng LAN cho: %s (aoe-linux firewall status)" "$(cfg_get firewall_nets | grep . || echo -)"; fi
     if [ -e "$LOG" ]; then
         local real; real=$(readlink -f "$LOG")
@@ -875,6 +905,7 @@ apply_proxy
 case "$cmd" in
     proxy)         proxy_cmd "${1:-}" ;;
     firewall)      firewall_cmd "${1:-}" ;;
+    perf)          perf_cmd "${1:-}" ;;
     lan)           lan_info ;;
     name)          set_name "${1:-}" ;;
     ime)           ime_cmd "${1:-}" ;;
